@@ -1,6 +1,6 @@
-# cc-mobile
+# claude-agent-mobile
 
-Mobile-first web UI for Claude Code data with a WebSocket backend.
+Mobile-first web UI for Claude Code data using Claude Agent SDK with a WebSocket backend.
 
 ## Setup
 

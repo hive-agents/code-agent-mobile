@@ -224,4 +224,4 @@ wss.on('connection', (socket: WebSocket) => {
 
 })
 
-console.log(`cc-mobile server listening on ws://localhost:${PORT}`)
+console.log(`claude-agent-mobile server listening on ws://localhost:${PORT}`)

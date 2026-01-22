@@ -1,5 +1,5 @@
 {
-  "name": "cc-mobile",
+  "name": "claude-agent-mobile",
   "private": true,
   "type": "module",
   "scripts": {
