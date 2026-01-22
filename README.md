@@ -17,6 +17,15 @@ npm run dev
 The backend listens on `ws://localhost:8787` by default.
 The dev server uses `tsc --watch` plus `node --watch` for the backend.
 
+## Run (prod)
+
+```bash
+npm run build
+node server/dist/index.js
+```
+
+Serve `dist/` with nginx or similar. Set `VITE_WS_URL` at build time to point to your production WebSocket URL.
+
 ## Environment
 
 - `ANTHROPIC_API_KEY`: optional if you have Claude OAuth already configured; otherwise required to send prompts.
