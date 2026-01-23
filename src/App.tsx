@@ -42,10 +42,12 @@ type FlatItem =
       role: ChatMessage['role']
       blocks: Block[]
       meta?: ChatMessage['meta']
+      turn: number
     }
   | {
       kind: 'tool'
       tool: ToolEntry
+      turn: number
     }
 
 type DisplayItem =
@@ -55,11 +57,25 @@ type DisplayItem =
       role: ChatMessage['role']
       blocks: Block[]
       meta?: ChatMessage['meta']
+      isIntermediate?: boolean
     }
   | {
       kind: 'toolStack'
       id: string
-      tools: ToolEntry[]
+      entries: StackEntry[]
+    }
+
+type StackEntry =
+  | {
+      kind: 'tool'
+      tool: ToolEntry
+    }
+  | {
+      kind: 'message'
+      id: string
+      role: ChatMessage['role']
+      blocks: Block[]
+      meta?: ChatMessage['meta']
     }
 
 type Breadcrumb = {
@@ -74,12 +90,14 @@ type ServerPayload =
       conversations: ConversationSummary[]
       activeConversationId: string | null
       messages: ChatMessage[]
+      model?: string | null
     }
   | {
       type: 'conversation'
       sessionId: string | null
       messages: ChatMessage[]
       currentProject?: string | null
+      model?: string | null
     }
   | {
       type: 'dir_list'
@@ -138,6 +156,14 @@ function truncateWords(text: string, maxWords = 10) {
   return `${words.slice(0, maxWords).join(' ')}...`
 }
 
+function resolveModelFromServer(model?: string | null) {
+  if (!model) return null
+  const normalized = model.trim().toLowerCase()
+  if (normalized === 'opus-4.5' || normalized.includes('opus')) return 'opus-4.5'
+  if (normalized === 'sonnet-4.5' || normalized.includes('sonnet')) return 'sonnet-4.5'
+  return null
+}
+
 function renderMarkdown(text: string) {
   const html = marked.parse(text || '', { async: false }) as string
   return { __html: DOMPurify.sanitize(html) }
@@ -168,10 +194,13 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false)
   const [conversationSearchQuery, setConversationSearchQuery] = useState('')
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const [selectedModel, setSelectedModel] = useState<'opus-4.5' | 'sonnet-4.5'>('sonnet-4.5')
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
   const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>({})
   const [isProcessing, setIsProcessing] = useState(false)
   const [inputText, setInputText] = useState('')
+  const [planMode, setPlanMode] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<{ name: string; content: string }[]>([])
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
   const [isAtTop, setIsAtTop] = useState(true)
@@ -234,12 +263,20 @@ export default function App() {
           setConversations(payload.conversations)
           setActiveSessionId(payload.activeConversationId)
           setMessages(payload.messages)
+          const resolvedModel = resolveModelFromServer(payload.model)
+          if (resolvedModel) {
+            setSelectedModel(resolvedModel)
+          }
         }
         if (payload.type === 'conversation') {
           setActiveSessionId(payload.sessionId)
           setMessages(payload.messages)
           if (payload.currentProject !== undefined) {
             setCurrentProject(payload.currentProject)
+          }
+          const resolvedModel = resolveModelFromServer(payload.model)
+          if (resolvedModel) {
+            setSelectedModel(resolvedModel)
           }
         }
         if (payload.type === 'dir_list') {
@@ -286,6 +323,25 @@ export default function App() {
   }, [refreshAuthStatus])
 
   useEffect(() => {
+    const root = document.documentElement
+    const updateViewportWidth = () => {
+      const width = window.visualViewport?.width ?? window.innerWidth
+      root.style.setProperty('--app-vw', `${Math.round(width)}px`)
+    }
+
+    updateViewportWidth()
+    window.addEventListener('resize', updateViewportWidth)
+    window.visualViewport?.addEventListener('resize', updateViewportWidth)
+    window.visualViewport?.addEventListener('scroll', updateViewportWidth)
+    return () => {
+      window.removeEventListener('resize', updateViewportWidth)
+      window.visualViewport?.removeEventListener('resize', updateViewportWidth)
+      window.visualViewport?.removeEventListener('scroll', updateViewportWidth)
+      root.style.removeProperty('--app-vw')
+    }
+  }, [])
+
+  useEffect(() => {
     if (authStatusLoading) return
     if (authMode === 'builtin' && !authAuthorized) return
     connectWebSocket()
@@ -293,6 +349,42 @@ export default function App() {
       wsRef.current?.close()
     }
   }, [authStatusLoading, authMode, authAuthorized, connectWebSocket])
+
+  useEffect(() => {
+    const ua = navigator.userAgent
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes('Mac') && 'ontouchend' in document)
+    if (!isIOS) return
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]')
+    if (!meta) return
+    const baseContent = 'width=device-width, initial-scale=1, viewport-fit=cover'
+    if (meta.content !== baseContent) {
+      meta.content = baseContent
+    }
+
+    let resetId: number | null = null
+    const resetViewport = () => {
+      const viewport = window.visualViewport
+      if (!viewport || viewport.scale <= 1) return
+      // iOS Safari can stick at a zoomed scale after inputs blur.
+      meta.content = `${baseContent}, maximum-scale=1`
+      if (resetId !== null) window.clearTimeout(resetId)
+      resetId = window.setTimeout(() => {
+        meta.content = baseContent
+      }, 80)
+    }
+
+    const handleFocusOut = () => {
+      window.setTimeout(resetViewport, 0)
+    }
+
+    window.addEventListener('focusout', handleFocusOut)
+    window.addEventListener('orientationchange', resetViewport)
+    return () => {
+      window.removeEventListener('focusout', handleFocusOut)
+      window.removeEventListener('orientationchange', resetViewport)
+      if (resetId !== null) window.clearTimeout(resetId)
+    }
+  }, [])
 
   const updateScrollState = useCallback(() => {
     const node = scrollRef.current
@@ -395,7 +487,9 @@ export default function App() {
     const payload = {
       type: 'send_prompt',
       text: inputText.trim(),
-      attachments: pendingFiles
+      attachments: pendingFiles,
+      model: selectedModel,
+      planMode
     }
     wsRef.current?.send(JSON.stringify(payload))
     setInputText('')
@@ -432,12 +526,14 @@ export default function App() {
     setDrawerOpen(false)
     setConversationSearchOpen(false)
     setConversationSearchQuery('')
+    setModelMenuOpen(false)
   }
 
   const handleNewConversation = () => {
     setDrawerOpen(false)
     setConversationSearchOpen(false)
     setConversationSearchQuery('')
+    setModelMenuOpen(false)
     setProjectPickerOpen(true)
     setSearchOpen(false)
     setSearchQuery('')
@@ -475,6 +571,7 @@ export default function App() {
   }
 
   const handleToggleConversationSearch = () => {
+    setModelMenuOpen(false)
     setConversationSearchOpen((prev) => {
       const next = !prev
       if (!next) {
@@ -486,6 +583,11 @@ export default function App() {
 
   const handleClearConversationSearch = () => {
     setConversationSearchQuery('')
+  }
+
+  const handleSelectModel = (model: 'opus-4.5' | 'sonnet-4.5') => {
+    setSelectedModel(model)
+    setModelMenuOpen(false)
   }
 
   const handleLoginSubmit: React.FormEventHandler<HTMLFormElement> = async (event) => {
@@ -559,19 +661,42 @@ export default function App() {
     const pendingTools: ToolEntry[] = []
     let toolIndex = 0
     let messageIndex = 0
+    let currentTurn = -1
+
+    const filterBlocks = (blocks: Block[]) => {
+      return blocks.filter((block) => {
+        if (block.type === 'text' || block.type === 'reasoning' || block.type === 'other') {
+          return Boolean(block.text && block.text.trim())
+        }
+        if (block.type === 'attachment') {
+          const hasText = Boolean(block.text && block.text.trim())
+          return Boolean(block.name || hasText)
+        }
+        return false
+      })
+    }
 
     for (const message of messages) {
+      if (message.role === 'user') {
+        currentTurn += 1
+      }
+      if (currentTurn < 0) currentTurn = 0
       let segmentBlocks: Block[] = []
       let segmentIndex = 0
 
       const flushSegment = () => {
-        if (segmentBlocks.length === 0) return
+        const filteredBlocks = filterBlocks(segmentBlocks)
+        if (filteredBlocks.length === 0) {
+          segmentBlocks = []
+          return
+        }
         flatItems.push({
           kind: 'message',
           id: `${message.id}-${messageIndex}-${segmentIndex}`,
           role: message.role,
-          blocks: segmentBlocks,
-          meta: message.meta
+          blocks: filteredBlocks,
+          meta: message.meta,
+          turn: currentTurn
         })
         messageIndex += 1
         segmentIndex += 1
@@ -588,7 +713,7 @@ export default function App() {
           }
           toolIndex += 1
           pendingTools.push(tool)
-          flatItems.push({ kind: 'tool', tool })
+          flatItems.push({ kind: 'tool', tool, turn: currentTurn })
           return
         }
         if (block.type === 'tool_result') {
@@ -603,7 +728,7 @@ export default function App() {
               result: block.text ?? ''
             }
             toolIndex += 1
-            flatItems.push({ kind: 'tool', tool })
+            flatItems.push({ kind: 'tool', tool, turn: currentTurn })
           }
           return
         }
@@ -613,39 +738,78 @@ export default function App() {
       flushSegment()
     }
 
+    const lastTurn = currentTurn < 0 ? 0 : currentTurn
+    const turnHasTools = new Map<number, boolean>()
+    const turnLastAssistantIndex = new Map<number, number>()
+
+    flatItems.forEach((item, index) => {
+      if (item.kind === 'tool') {
+        turnHasTools.set(item.turn, true)
+        return
+      }
+      if (item.role === 'assistant') {
+        turnLastAssistantIndex.set(item.turn, index)
+      }
+    })
+
     const stackedItems: DisplayItem[] = []
-    let stack: ToolEntry[] = []
+    let stack: StackEntry[] = []
     let stackIndex = 0
 
-    for (const item of flatItems) {
-      if (item.kind === 'tool') {
-        stack.push(item.tool)
-        continue
-      }
-      if (stack.length > 0) {
-        stackedItems.push({ kind: 'toolStack', id: `stack-${stackIndex}`, tools: stack })
-        stackIndex += 1
-        stack = []
-      }
-      stackedItems.push(item)
+    const flushStack = () => {
+      if (stack.length === 0) return
+      stackedItems.push({ kind: 'toolStack', id: `stack-${stackIndex}`, entries: stack })
+      stackIndex += 1
+      stack = []
     }
 
-    if (stack.length > 0) {
-      stackedItems.push({ kind: 'toolStack', id: `stack-${stackIndex}`, tools: stack })
-    }
+    flatItems.forEach((item, index) => {
+      if (item.kind === 'tool') {
+        stack.push({ kind: 'tool', tool: item.tool })
+        return
+      }
+
+      const hasTools = turnHasTools.get(item.turn) === true
+      const isAssistant = item.role === 'assistant'
+      const isLastAssistant = turnLastAssistantIndex.get(item.turn) === index
+      const isIntermediate = hasTools && isAssistant && !isLastAssistant
+      const isActiveTurn = isProcessing && item.turn === lastTurn
+
+      if (isIntermediate && !isActiveTurn) {
+        stack.push({
+          kind: 'message',
+          id: item.id,
+          role: item.role,
+          blocks: item.blocks,
+          meta: item.meta
+        })
+        return
+      }
+
+      flushStack()
+      stackedItems.push({
+        kind: 'message',
+        id: item.id,
+        role: item.role,
+        blocks: item.blocks,
+        meta: item.meta,
+        isIntermediate: isIntermediate && isActiveTurn
+      })
+    })
+
+    flushStack()
 
     return stackedItems
-  }, [messages])
+  }, [messages, isProcessing])
 
-  const renderMessageBlocks = (item: DisplayItem) => {
-    if (item.kind !== 'message') return null
+  const renderBlocks = (blocks: Block[], keyPrefix: string) => {
     return (
       <>
-        {item.blocks.map((block, index) => {
+        {blocks.map((block, index) => {
           if (block.type === 'text') {
             return (
               <div
-                key={`${item.id}-text-${index}`}
+                key={`${keyPrefix}-text-${index}`}
                 className="markdown"
                 dangerouslySetInnerHTML={renderMarkdown(block.text ?? '')}
               />
@@ -653,7 +817,7 @@ export default function App() {
           }
           if (block.type === 'attachment') {
             return (
-              <div key={`${item.id}-attachment-${index}`} className="block tool-use">
+              <div key={`${keyPrefix}-attachment-${index}`} className="block tool-use">
                 <div className="block-label">Attachment: {block.name}</div>
                 <pre>{block.text}</pre>
               </div>
@@ -661,7 +825,7 @@ export default function App() {
           }
           if (block.type === 'reasoning') {
             return (
-              <div key={`${item.id}-reasoning-${index}`} className="block reasoning">
+              <div key={`${keyPrefix}-reasoning-${index}`} className="block reasoning">
                 <div
                   className="markdown"
                   dangerouslySetInnerHTML={renderMarkdown(block.text ?? '')}
@@ -670,7 +834,7 @@ export default function App() {
             )
           }
           return (
-            <div key={`${item.id}-other-${index}`} className="block">
+            <div key={`${keyPrefix}-other-${index}`} className="block">
               <div className="block-label">Other</div>
               <pre>{block.text}</pre>
             </div>
@@ -680,8 +844,14 @@ export default function App() {
     )
   }
 
+  const renderMessageBlocks = (item: DisplayItem) => {
+    if (item.kind !== 'message') return null
+    return renderBlocks(item.blocks, item.id)
+  }
+
   const loginRequired = authMode === 'builtin' && !authAuthorized
   const overlayOpen = drawerOpen || projectPickerOpen
+  const showScrollJumps = !overlayOpen && !isAtTop && !isAtBottom
 
   return (
     <div className="app">
@@ -741,6 +911,7 @@ export default function App() {
           setSearchOpen(false)
           setConversationSearchOpen(false)
           setConversationSearchQuery('')
+          setModelMenuOpen(false)
         }}
       />
       <aside className={drawerOpen ? 'drawer open' : 'drawer'}>
@@ -791,18 +962,112 @@ export default function App() {
             <div className="conversation-empty">No conversations found.</div>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="drawer-search-toggle"
-          onClick={handleToggleConversationSearch}
-          aria-label="Search conversations"
-          aria-pressed={conversationSearchOpen}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
-            <line x1="16" y1="16" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
-          </svg>
-        </button>
+        <div className="drawer-actions">
+          <div className="model-picker">
+            <button
+              type="button"
+              className="model-toggle"
+              onClick={() => setModelMenuOpen((prev) => !prev)}
+              aria-label={`Model: ${selectedModel}`}
+              aria-expanded={modelMenuOpen}
+              aria-haspopup="menu"
+            >
+              {selectedModel === 'opus-4.5' ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect
+                    x="5"
+                    y="7"
+                    width="14"
+                    height="12"
+                    rx="3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  />
+                  <circle cx="9" cy="12" r="1.5" fill="currentColor" />
+                  <circle cx="15" cy="12" r="1.5" fill="currentColor" />
+                  <line x1="12" y1="3" x2="12" y2="7" stroke="currentColor" strokeWidth="2" />
+                  <circle cx="12" cy="3" r="1" fill="currentColor" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M8.6 6.8C9 5.4 10.3 4.4 11.8 4.4c1.3 0 2.5.7 3.1 1.9 1.5.2 2.7 1.5 2.7 3 0 1-.5 1.9-1.3 2.4.3.5.4 1 .4 1.6 0 1.7-1.4 3.1-3.1 3.1-1 0-1.9-.4-2.5-1.1-.6.7-1.5 1.1-2.5 1.1-1.7 0-3.1-1.4-3.1-3.1 0-1 .5-1.9 1.2-2.4-.3-.4-.5-1-.5-1.6 0-1.4 1-2.7 2.4-2.9Z"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              )}
+            </button>
+            {modelMenuOpen ? (
+              <div className="model-menu" role="menu" aria-label="Select model">
+                <button
+                  type="button"
+                  className={selectedModel === 'opus-4.5' ? 'model-option active' : 'model-option'}
+                  onClick={() => handleSelectModel('opus-4.5')}
+                  role="menuitemradio"
+                  aria-checked={selectedModel === 'opus-4.5'}
+                >
+                  <span className="model-option-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <rect
+                        x="5"
+                        y="7"
+                        width="14"
+                        height="12"
+                        rx="3"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      />
+                      <circle cx="9" cy="12" r="1.5" fill="currentColor" />
+                      <circle cx="15" cy="12" r="1.5" fill="currentColor" />
+                      <line x1="12" y1="3" x2="12" y2="7" stroke="currentColor" strokeWidth="2" />
+                      <circle cx="12" cy="3" r="1" fill="currentColor" />
+                    </svg>
+                  </span>
+                  <span className="model-option-label">opus-4.5</span>
+                </button>
+                <button
+                  type="button"
+                  className={selectedModel === 'sonnet-4.5' ? 'model-option active' : 'model-option'}
+                  onClick={() => handleSelectModel('sonnet-4.5')}
+                  role="menuitemradio"
+                  aria-checked={selectedModel === 'sonnet-4.5'}
+                >
+                  <span className="model-option-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path
+                        d="M8.6 6.8C9 5.4 10.3 4.4 11.8 4.4c1.3 0 2.5.7 3.1 1.9 1.5.2 2.7 1.5 2.7 3 0 1-.5 1.9-1.3 2.4.3.5.4 1 .4 1.6 0 1.7-1.4 3.1-3.1 3.1-1 0-1.9-.4-2.5-1.1-.6.7-1.5 1.1-2.5 1.1-1.7 0-3.1-1.4-3.1-3.1 0-1 .5-1.9 1.2-2.4-.3-.4-.5-1-.5-1.6 0-1.4 1-2.7 2.4-2.9Z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </span>
+                  <span className="model-option-label">sonnet-4.5</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="drawer-search-toggle"
+            onClick={handleToggleConversationSearch}
+            aria-label="Search conversations"
+            aria-pressed={conversationSearchOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+              <line x1="16" y1="16" x2="21" y2="21" stroke="currentColor" strokeWidth="2" />
+            </svg>
+          </button>
+        </div>
       </aside>
 
       <section className={projectPickerOpen ? 'project-picker open' : 'project-picker'}>
@@ -949,7 +1214,7 @@ export default function App() {
             const showRoleLabel = item.role === 'user' || item.role === 'assistant'
             return (
               <div key={item.id} className="chat-item">
-                <div className={`message ${roleClass}`}>
+                <div className={`message ${roleClass}${item.isIntermediate ? ' intermediate' : ''}`}>
                   {showRoleLabel ? <div className="message-label">{roleLabel}</div> : null}
                   {renderMessageBlocks(item)}
                 </div>
@@ -957,27 +1222,44 @@ export default function App() {
             )
           }
 
-          const isStackExpanded = item.tools.length === 1 || !!expandedStacks[item.id]
-          const stackCollapsed = item.tools.length > 1 && !isStackExpanded
-          const toolsToShow = isStackExpanded ? item.tools : [item.tools[0]]
+          const toolEntries = item.entries.filter((entry) => entry.kind === 'tool')
+          const hasStackMessages = item.entries.some((entry) => entry.kind === 'message')
+          const canCollapse = toolEntries.length > 1 || hasStackMessages
+          const isStackExpanded = !canCollapse || !!expandedStacks[item.id]
+          const stackCollapsed = canCollapse && !isStackExpanded
+          const entriesToShow = isStackExpanded ? item.entries : toolEntries.slice(0, 1)
 
           return (
             <div key={item.id} className="chat-item">
               <div className={stackCollapsed ? 'tool-stack stacked' : 'tool-stack'}>
                 <div className="tool-stack-header">
-                  <div className="tool-stack-title">Tool uses</div>
-                  {item.tools.length > 1 ? (
+                  <div className="tool-stack-title">
+                    Tool uses
+                    {hasStackMessages ? (
+                      <span className="tool-stack-meta">Agent updates</span>
+                    ) : null}
+                  </div>
+                  {canCollapse ? (
                     <button
                       type="button"
                       className="stack-toggle"
                       onClick={() => toggleStack(item.id)}
                     >
-                      {isStackExpanded ? 'Collapse stack' : `Stack x${item.tools.length}`}
+                      {isStackExpanded ? 'Collapse stack' : `Stack x${toolEntries.length}`}
                     </button>
                   ) : null}
                 </div>
                 <div className="tool-stack-list">
-                  {toolsToShow.map((tool) => {
+                  {entriesToShow.map((entry) => {
+                    if (entry.kind === 'message') {
+                      return (
+                        <div key={entry.id} className="tool-stack-message">
+                          <div className="tool-stack-message-label">Agent update</div>
+                          {renderBlocks(entry.blocks, `${entry.id}-stack`)}
+                        </div>
+                      )
+                    }
+                    const tool = entry.tool
                     const isOpen = !!expandedTools[tool.id]
                     return (
                       <div key={tool.id} className={isOpen ? 'tool-card open' : 'tool-card'}>
@@ -1026,40 +1308,38 @@ export default function App() {
         ) : null}
       </main>
 
-      {!overlayOpen && !isAtTop && !isAtBottom ? (
-        <div className="scroll-jumps">
-          <button
-            type="button"
-            className="scroll-jump"
-            onClick={scrollToTop}
-            aria-label="Go to top"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <polyline
-                points="6 14 12 8 18 14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="scroll-jump"
-            onClick={scrollToBottom}
-            aria-label="Go to bottom"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <polyline
-                points="6 10 12 16 18 10"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              />
-            </svg>
-          </button>
-        </div>
-      ) : null}
+      <div className={showScrollJumps ? 'scroll-jumps visible' : 'scroll-jumps'}>
+        <button
+          type="button"
+          className="scroll-jump"
+          onClick={scrollToTop}
+          aria-label="Go to top"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <polyline
+              points="6 14 12 8 18 14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="scroll-jump"
+          onClick={scrollToBottom}
+          aria-label="Go to bottom"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <polyline
+              points="6 10 12 16 18 10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            />
+          </svg>
+        </button>
+      </div>
 
       <footer className="composer">
         {pendingFiles.length > 0 ? (
@@ -1079,6 +1359,16 @@ export default function App() {
             onKeyDown={handleKeyDown}
           />
           <div className="composer-actions">
+            <button
+              type="button"
+              className={planMode ? 'plan-toggle active' : 'plan-toggle'}
+              onClick={() => setPlanMode((prev) => !prev)}
+              aria-pressed={planMode}
+              aria-label="Toggle plan mode"
+            >
+              <span className="plan-dot" aria-hidden="true" />
+              <span>Plan</span>
+            </button>
             <button
               type="button"
               className="file-button"

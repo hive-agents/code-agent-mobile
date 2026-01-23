@@ -1,7 +1,7 @@
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import crypto from 'crypto'
 import http, { type IncomingMessage } from 'http'
-import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { query, type PermissionMode, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   getBootstrapState,
   listConversations,
@@ -22,12 +22,14 @@ type ClientMessage =
   | { type: 'select_conversation'; sessionId: string; project?: string }
   | { type: 'new_conversation'; project?: string }
   | { type: 'list_dirs'; path?: string | null }
-  | { type: 'send_prompt'; text: string; attachments?: Attachment[] }
+  | { type: 'send_prompt'; text: string; attachments?: Attachment[]; model?: string; planMode?: boolean }
 
 const PORT = Number(process.env.CAM_MOBILE_PORT ?? process.env.PORT ?? 8787)
 const WS_PATH = process.env.CAM_MOBILE_WS_PATH ?? '/cam-ws'
+const SONNET_MODEL = process.env.CLAUDE_SONNET_MODEL ?? 'claude-sonnet-4-5-20250929'
+const OPUS_MODEL = process.env.CLAUDE_OPUS_MODEL ?? 'claude-opus-4-5-20251101'
 const DEFAULT_MODEL =
-  process.env.CLAUDE_MODEL ?? process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-5-20250929'
+  process.env.CLAUDE_MODEL ?? process.env.ANTHROPIC_MODEL ?? SONNET_MODEL
 
 const AUTH_MODE = (process.env.CAM_AUTH_MODE ?? 'builtin').toLowerCase()
 const AUTH_COOKIE_NAME = process.env.CAM_AUTH_COOKIE_NAME ?? 'cam_session'
@@ -335,6 +337,26 @@ function buildUserMessage(text: string, attachments: Attachment[]): UIMessage {
   }
 }
 
+function resolveModel(model?: string | null) {
+  if (!model) return null
+  const trimmed = model.trim()
+  if (!trimmed) return null
+  const normalized = trimmed.toLowerCase()
+  if (normalized === 'sonnet-4.5') return SONNET_MODEL
+  if (normalized === 'opus-4.5') return OPUS_MODEL
+  return trimmed
+}
+
+function resolveModelLabel(model?: string | null) {
+  if (!model) return null
+  const normalized = model.trim().toLowerCase()
+  const opusMatch = OPUS_MODEL.toLowerCase()
+  const sonnetMatch = SONNET_MODEL.toLowerCase()
+  if (normalized === opusMatch || normalized.includes('opus')) return 'opus-4.5'
+  if (normalized === sonnetMatch || normalized.includes('sonnet')) return 'sonnet-4.5'
+  return null
+}
+
 wss.on('connection', (socket: WebSocket) => {
   let activeSessionId: string | null = null
   let activeProject: string | null = null
@@ -371,12 +393,14 @@ wss.on('connection', (socket: WebSocket) => {
       activeSessionId = state.activeConversationId
       activeProject = state.currentProject
       if (state.model) activeModel = state.model
+      const modelLabel = resolveModelLabel(state.model ?? activeModel)
       send({
         type: 'bootstrap',
         currentProject: state.currentProject,
         conversations: state.conversations,
         activeConversationId: state.activeConversationId,
-        messages: state.messages
+        messages: state.messages,
+        model: modelLabel
       })
       return
     }
@@ -386,11 +410,13 @@ wss.on('connection', (socket: WebSocket) => {
       activeProject = parsed.project ?? activeProject
       const { messages, model } = await loadConversation(parsed.sessionId, parsed.project)
       if (model) activeModel = model
+      const modelLabel = resolveModelLabel(model ?? activeModel)
       send({
         type: 'conversation',
         sessionId: parsed.sessionId,
         messages,
-        currentProject: activeProject
+        currentProject: activeProject,
+        model: modelLabel
       })
       return
     }
@@ -416,14 +442,20 @@ wss.on('connection', (socket: WebSocket) => {
       const attachments = parsed.attachments ?? []
       const prompt = buildPrompt(parsed.text ?? '', attachments)
       if (!prompt.trim()) return
+      const requestedModel = resolveModel(parsed.model)
+      if (requestedModel) {
+        activeModel = requestedModel
+      }
 
       isStreaming = true
       send({ type: 'processing', active: true })
       send({ type: 'message', message: buildUserMessage(parsed.text ?? '', attachments) })
 
       try {
+        const permissionMode: PermissionMode = parsed.planMode ? 'plan' : 'default'
         const options = {
-          model: activeModel,
+          model: requestedModel ?? activeModel,
+          permissionMode,
           cwd: resolveQueryCwd(),
           ...(activeSessionId ? { resume: activeSessionId } : {})
         }
