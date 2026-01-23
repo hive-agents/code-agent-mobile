@@ -1,0 +1,17 @@
+{
+  "name": "claude on hive",
+  "short_name": "claude on hive",
+  "description": "Mobile-first web UI for Claude Code data using Claude Agent SDK with a WebSocket backend.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "background_color": "#f1d9bf",
+  "theme_color": "#f1d9bf",
+  "icons": [
+    {
+      "src": "https://hive-agents.xyz/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

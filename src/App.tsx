@@ -118,23 +118,41 @@ type AuthStatus = {
   salt?: string | null
 }
 
+const IS_SECURE_CONTEXT = window.location.protocol === 'https:'
+
+const normalizeWebSocketUrl = (rawUrl: string) => {
+  const url = new URL(rawUrl)
+  if (url.protocol === 'http:') url.protocol = 'ws:'
+  if (url.protocol === 'https:') url.protocol = 'wss:'
+  if (IS_SECURE_CONTEXT && url.protocol === 'ws:') url.protocol = 'wss:'
+  return url.toString()
+}
+
+const normalizeHttpOrigin = (rawUrl: string) => {
+  const url = new URL(rawUrl)
+  if (url.protocol === 'ws:') url.protocol = 'http:'
+  if (url.protocol === 'wss:') url.protocol = 'https:'
+  if (IS_SECURE_CONTEXT && url.protocol === 'http:') url.protocol = 'https:'
+  return url.origin
+}
+
 const WS_URL = (() => {
-  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL as string
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  if (import.meta.env.VITE_WS_URL) {
+    return normalizeWebSocketUrl(import.meta.env.VITE_WS_URL as string)
+  }
+  const protocol = IS_SECURE_CONTEXT ? 'wss' : 'ws'
   return `${protocol}://${window.location.hostname}:8787/cam-ws`
 })()
 
 const HTTP_BASE = (() => {
   if (import.meta.env.VITE_HTTP_URL) {
-    const httpUrl = new URL(import.meta.env.VITE_HTTP_URL as string)
-    return httpUrl.origin
+    return normalizeHttpOrigin(import.meta.env.VITE_HTTP_URL as string)
   }
   if (import.meta.env.VITE_WS_URL) {
-    const wsUrl = new URL(import.meta.env.VITE_WS_URL as string)
-    wsUrl.protocol = wsUrl.protocol === 'wss:' ? 'https:' : 'http:'
-    return wsUrl.origin
+    return normalizeHttpOrigin(import.meta.env.VITE_WS_URL as string)
   }
-  return `${window.location.protocol}//${window.location.hostname}:8787`
+  const protocol = IS_SECURE_CONTEXT ? 'https' : 'http'
+  return `${protocol}://${window.location.hostname}:8787`
 })()
 
 marked.setOptions({
