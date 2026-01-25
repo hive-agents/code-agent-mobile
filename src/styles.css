@@ -3,6 +3,9 @@
 :root {
   color-scheme: light dark;
   --app-vw: 100%;
+  --layout-vh: 100dvh;
+  --app-vh: 100dvh;
+  --app-offset-top: 0px;
   --font-display: "Fraunces", serif;
   --font-body: "IBM Plex Sans", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -10,6 +13,7 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --label-sticky-top: calc(var(--safe-top) + 52px);
 
   --bg: #f1d9bf;
   --bg-glow: #f1d9bf;
@@ -67,7 +71,8 @@ body {
   font-family: var(--font-body);
   background: var(--bg);
   color: var(--ink);
-  height: 100%;
+  height: var(--layout-vh, 100dvh);
+  min-height: var(--layout-vh, 100dvh);
   width: var(--app-vw);
   max-width: var(--app-vw);
   overflow-x: hidden;
@@ -76,7 +81,8 @@ body {
 }
 
 body {
-  min-height: 100dvh;
+  min-height: var(--layout-vh, 100dvh);
+  overflow: hidden;
 }
 
 body::before {
@@ -92,8 +98,28 @@ body::before {
   opacity: 0.35;
 }
 
+.safe-top-glass {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--safe-top) + 8px);
+  background: color-mix(in srgb, var(--surface) 75%, transparent 25%);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 7;
+}
+
+@media (display-mode: standalone), (display-mode: fullscreen) {
+  .safe-top-glass {
+    opacity: 1;
+  }
+}
+
 #root {
-  height: 100dvh;
+  height: var(--layout-vh, 100dvh);
+  min-height: var(--layout-vh, 100dvh);
   width: var(--app-vw);
   max-width: var(--app-vw);
   overflow-x: hidden;
@@ -103,10 +129,12 @@ body::before {
   position: relative;
   display: grid;
   grid-template-rows: 1fr auto;
-  height: 100dvh;
+  height: var(--app-vh, 100dvh);
+  min-height: var(--app-vh, 100dvh);
   width: var(--app-vw);
   max-width: var(--app-vw);
   overflow: hidden;
+  transform: translateY(var(--app-offset-top, 0px));
 }
 
 .app-header {
@@ -227,7 +255,7 @@ body::before {
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
-  padding: 8px calc(16px + var(--safe-right)) 24px calc(16px + var(--safe-left));
+  padding: calc(8px + var(--safe-top)) calc(16px + var(--safe-right)) 24px calc(16px + var(--safe-left));
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -255,7 +283,6 @@ body::before {
   line-height: 1.5;
   font-size: 0.98rem;
   overflow-wrap: anywhere;
-  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -286,7 +313,7 @@ body::before {
 
 .message-label {
   position: sticky;
-  top: 12px;
+  top: var(--label-sticky-top);
   align-self: flex-start;
   padding: 2px 8px;
   border-radius: 999px;
@@ -296,9 +323,10 @@ body::before {
   font-size: 0.62rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  z-index: 4;
+  z-index: 6;
   margin-bottom: 8px;
   margin-left: 44px;
+  pointer-events: none;
 }
 
 .message h4 {

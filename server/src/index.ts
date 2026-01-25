@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import http, { type IncomingMessage, type ServerResponse } from 'http'
 import https from 'https'
 import type { Duplex } from 'stream'
-import { query, type PermissionMode, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { query, type PermissionMode, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   getBootstrapState,
   listConversations,
@@ -14,10 +14,9 @@ import {
   type UIMessage
 } from './claudeStore.js'
 
-type Attachment = {
-  name: string
-  content: string
-}
+type TextAttachment = { type: 'text'; name: string; content: string }
+type ImageAttachment = { type: 'image'; name: string; mediaType: string; data: string }
+type Attachment = TextAttachment | ImageAttachment
 
 type ClientMessage =
   | { type: 'init' }
@@ -359,10 +358,11 @@ function sdkMessageToUI(message: SDKMessage): UIMessage | null {
 
 function buildPrompt(text: string, attachments: Attachment[]) {
   const trimmed = text.trim()
-  if (attachments.length === 0) return trimmed
+  const textAttachments = attachments.filter((a): a is TextAttachment => a.type === 'text')
+  if (textAttachments.length === 0) return trimmed
 
   const header = trimmed.length ? trimmed : 'See attached files.'
-  const parts = attachments
+  const parts = textAttachments
     .map((file) => `--- ${file.name} ---\n${file.content}`)
     .join('\n\n')
   return `${header}\n\nAttachments:\n${parts}`
@@ -377,7 +377,9 @@ function buildUserMessage(text: string, attachments: Attachment[]): UIMessage {
     blocks.push({
       type: 'attachment',
       name: file.name,
-      text: `${file.name} (${file.content.length.toLocaleString()} chars)`
+      text: file.type === 'image'
+        ? `Image: ${file.name}`
+        : `${file.name} (${file.content.length.toLocaleString()} chars)`
     })
   }
 
@@ -495,8 +497,37 @@ wss.on('connection', (socket: WebSocket) => {
         return
       }
       const attachments = parsed.attachments ?? []
-      const prompt = buildPrompt(parsed.text ?? '', attachments)
-      if (!prompt.trim()) return
+      const hasImages = attachments.some((a) => a.type === 'image')
+      const textPrompt = buildPrompt(parsed.text ?? '', attachments)
+
+      // Build content blocks for Claude API
+      const contentBlocks: Array<
+        | { type: 'text'; text: string }
+        | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+      > = []
+
+      // Add image blocks first (Claude prefers images before text)
+      for (const att of attachments) {
+        if (att.type === 'image') {
+          contentBlocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: att.mediaType,
+              data: att.data
+            }
+          })
+        }
+      }
+
+      // Add text prompt (with text attachments embedded)
+      if (textPrompt.trim()) {
+        contentBlocks.push({ type: 'text', text: textPrompt })
+      }
+
+      // If no content, skip
+      if (contentBlocks.length === 0) return
+
       const requestedModel = resolveModel(parsed.model)
       if (requestedModel) {
         activeModel = requestedModel
@@ -514,6 +545,19 @@ wss.on('connection', (socket: WebSocket) => {
           cwd: resolveQueryCwd(),
           ...(activeSessionId ? { resume: activeSessionId } : {})
         }
+
+        // Use SDKUserMessage for multimodal content (images), string for text-only
+        const prompt = hasImages
+          ? (async function* () {
+              yield {
+                type: 'user',
+                message: { role: 'user', content: contentBlocks },
+                parent_tool_use_id: null,
+                session_id: activeSessionId ?? ''
+              } as SDKUserMessage
+            })()
+          : textPrompt
+
         for await (const msg of query({ prompt, options })) {
           if (msg.session_id) activeSessionId = msg.session_id
           const uiMessage = sdkMessageToUI(msg)

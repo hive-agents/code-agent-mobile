@@ -157,9 +157,7 @@ const HTTP_BASE = (() => {
 
 marked.setOptions({
   breaks: true,
-  gfm: true,
-  headerIds: false,
-  mangle: false
+  gfm: true
 })
 
 function formatProject(project: string) {
@@ -216,10 +214,14 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<'opus-4.5' | 'sonnet-4.5'>('sonnet-4.5')
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
   const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>({})
+  const [expandedOther, setExpandedOther] = useState<Record<string, boolean>>({})
   const [isProcessing, setIsProcessing] = useState(false)
   const [inputText, setInputText] = useState('')
   const [planMode, setPlanMode] = useState(false)
-  const [pendingFiles, setPendingFiles] = useState<{ name: string; content: string }[]>([])
+  const [pendingFiles, setPendingFiles] = useState<Array<
+    | { type: 'text'; name: string; content: string }
+    | { type: 'image'; name: string; mediaType: string; data: string }
+  >>([])
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
   const [isAtTop, setIsAtTop] = useState(true)
   const [isAtBottom, setIsAtBottom] = useState(true)
@@ -342,20 +344,41 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement
-    const updateViewportWidth = () => {
-      const width = window.visualViewport?.width ?? window.innerWidth
-      root.style.setProperty('--app-vw', `${Math.round(width)}px`)
+    const updateViewportSize = () => {
+      const viewport = window.visualViewport
+      const layoutWidth = window.innerWidth
+      const layoutHeight = window.innerHeight
+      const viewportWidth = viewport?.width ?? layoutWidth
+      const viewportHeight = viewport?.height ?? layoutHeight
+      const offsetTop = viewport?.offsetTop ?? 0
+      const heightDelta = Math.max(0, layoutHeight - viewportHeight)
+      const keyboardActive = heightDelta > 120
+      const appHeight = keyboardActive ? viewportHeight : layoutHeight
+      const appOffsetTop = keyboardActive ? offsetTop : 0
+      root.style.setProperty('--app-vw', `${Math.round(viewportWidth)}px`)
+      root.style.setProperty('--layout-vh', `${Math.round(layoutHeight)}px`)
+      root.style.setProperty('--app-vh', `${Math.round(appHeight)}px`)
+      root.style.setProperty('--app-offset-top', `${Math.round(appOffsetTop)}px`)
     }
 
-    updateViewportWidth()
-    window.addEventListener('resize', updateViewportWidth)
-    window.visualViewport?.addEventListener('resize', updateViewportWidth)
-    window.visualViewport?.addEventListener('scroll', updateViewportWidth)
+    updateViewportSize()
+    window.addEventListener('resize', updateViewportSize)
+    window.addEventListener('orientationchange', updateViewportSize)
+    window.addEventListener('focusin', updateViewportSize)
+    window.addEventListener('focusout', updateViewportSize)
+    window.visualViewport?.addEventListener('resize', updateViewportSize)
+    window.visualViewport?.addEventListener('scroll', updateViewportSize)
     return () => {
-      window.removeEventListener('resize', updateViewportWidth)
-      window.visualViewport?.removeEventListener('resize', updateViewportWidth)
-      window.visualViewport?.removeEventListener('scroll', updateViewportWidth)
+      window.removeEventListener('resize', updateViewportSize)
+      window.removeEventListener('orientationchange', updateViewportSize)
+      window.removeEventListener('focusin', updateViewportSize)
+      window.removeEventListener('focusout', updateViewportSize)
+      window.visualViewport?.removeEventListener('resize', updateViewportSize)
+      window.visualViewport?.removeEventListener('scroll', updateViewportSize)
       root.style.removeProperty('--app-vw')
+      root.style.removeProperty('--layout-vh')
+      root.style.removeProperty('--app-vh')
+      root.style.removeProperty('--app-offset-top')
     }
   }, [])
 
@@ -522,12 +545,32 @@ export default function App() {
   }
 
   const handleFileChange: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp']
     const files = event.target.files
     if (!files) return
-    const next: { name: string; content: string }[] = []
+    const next: (
+      | { type: 'text'; name: string; content: string }
+      | { type: 'image'; name: string; mediaType: string; data: string }
+    )[] = []
     for (const file of Array.from(files)) {
-      const text = await file.text()
-      next.push({ name: file.name, content: text })
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+      if (IMAGE_EXTENSIONS.includes(ext)) {
+        // Read as base64 for images
+        const arrayBuffer = await file.arrayBuffer()
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        )
+        next.push({
+          type: 'image',
+          name: file.name,
+          mediaType: file.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+          data: base64
+        })
+      } else {
+        // Read as text for non-images
+        const text = await file.text()
+        next.push({ type: 'text', name: file.name, content: text })
+      }
     }
     setPendingFiles((prev) => [...prev, ...next])
     event.target.value = ''
@@ -672,6 +715,10 @@ export default function App() {
 
   const toggleStack = (id: string) => {
     setExpandedStacks((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  const toggleOther = (id: string) => {
+    setExpandedOther((prev) => ({ ...prev, [id]: !prev[id] }))
   }
 
   const displayItems = useMemo(() => {
@@ -851,10 +898,25 @@ export default function App() {
               </div>
             )
           }
+          const otherKey = `${keyPrefix}-other-${index}`
+          const isOtherOpen = !!expandedOther[otherKey]
           return (
-            <div key={`${keyPrefix}-other-${index}`} className="block">
-              <div className="block-label">Other</div>
-              <pre>{block.text}</pre>
+            <div
+              key={otherKey}
+              className={isOtherOpen ? 'tool-card open' : 'tool-card'}
+            >
+              <button
+                type="button"
+                className="tool-line"
+                onClick={() => toggleOther(otherKey)}
+              >
+                {isOtherOpen ? 'Other (tap to collapse)' : 'Other (tap to expand)'}
+              </button>
+              {isOtherOpen ? (
+                <div className="tool-details">
+                  <pre>{block.text ?? ''}</pre>
+                </div>
+              ) : null}
             </div>
           )
         })}
@@ -873,6 +935,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="safe-top-glass" aria-hidden="true" />
       {loginRequired ? (
         <div className="auth-overlay">
           <div className="auth-modal">
