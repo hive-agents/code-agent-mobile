@@ -405,41 +405,76 @@ export default function App() {
     const root = document.documentElement
     const baselineHeightRef = { current: window.innerHeight }
     const baselineWidthRef = { current: window.innerWidth }
+    const mqlStandalone = window.matchMedia?.('(display-mode: standalone)')
+    const mqlFullscreen = window.matchMedia?.('(display-mode: fullscreen)')
+    let rafId: number | null = null
+    let timeoutId: number | null = null
+    let timeoutId2: number | null = null
     const updateViewportSize = () => {
       const viewport = window.visualViewport
       const layoutWidth = window.innerWidth
       const layoutHeight = window.innerHeight
       const viewportWidth = viewport?.width ?? layoutWidth
       const viewportHeight = viewport?.height ?? layoutHeight
+      const screenHeight = window.screen?.height ?? 0
       const widthDelta = Math.abs(layoutWidth - baselineWidthRef.current)
       if (widthDelta > 40) {
         baselineWidthRef.current = layoutWidth
         baselineHeightRef.current = layoutHeight
       }
-      const baseHeight = Math.max(baselineHeightRef.current, layoutHeight, viewportHeight)
+      const isStandalone =
+        mqlStandalone?.matches ||
+        mqlFullscreen?.matches ||
+        (typeof (navigator as Navigator & { standalone?: boolean }).standalone === 'boolean' &&
+          (navigator as Navigator & { standalone?: boolean }).standalone)
+      const baseHeight = isStandalone
+        ? Math.max(layoutHeight, viewportHeight, screenHeight)
+        : Math.max(baselineHeightRef.current, layoutHeight, viewportHeight)
       baselineHeightRef.current = baseHeight
-      const heightDelta = Math.max(0, baseHeight - viewportHeight)
-      const keyboardActive = heightDelta > 120
+      const heightDelta = Math.max(0, layoutHeight - viewportHeight)
+      const activeElement = document.activeElement
+      const isTextEntry =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement?.getAttribute?.('contenteditable') === 'true'
+      const keyboardActive = isTextEntry && heightDelta > 120
       const appHeight = keyboardActive ? viewportHeight : baseHeight
       root.style.setProperty('--app-vw', `${Math.round(viewportWidth)}px`)
       root.style.setProperty('--layout-vh', `${Math.round(baseHeight)}px`)
       root.style.setProperty('--app-vh', `${Math.round(appHeight)}px`)
     }
 
-    updateViewportSize()
-    window.addEventListener('resize', updateViewportSize)
-    window.addEventListener('orientationchange', updateViewportSize)
-    window.addEventListener('focusin', updateViewportSize)
-    window.addEventListener('focusout', updateViewportSize)
-    window.visualViewport?.addEventListener('resize', updateViewportSize)
-    window.visualViewport?.addEventListener('scroll', updateViewportSize)
+    const scheduleViewportUpdate = () => {
+      updateViewportSize()
+      if (rafId !== null) window.cancelAnimationFrame(rafId)
+      rafId = window.requestAnimationFrame(updateViewportSize)
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+      if (timeoutId2 !== null) window.clearTimeout(timeoutId2)
+      timeoutId = window.setTimeout(updateViewportSize, 120)
+      timeoutId2 = window.setTimeout(updateViewportSize, 360)
+    }
+
+    scheduleViewportUpdate()
+    window.addEventListener('pageshow', scheduleViewportUpdate)
+    document.addEventListener('visibilitychange', scheduleViewportUpdate)
+    window.addEventListener('resize', scheduleViewportUpdate)
+    window.addEventListener('orientationchange', scheduleViewportUpdate)
+    window.addEventListener('focusin', scheduleViewportUpdate)
+    window.addEventListener('focusout', scheduleViewportUpdate)
+    window.visualViewport?.addEventListener('resize', scheduleViewportUpdate)
+    window.visualViewport?.addEventListener('scroll', scheduleViewportUpdate)
     return () => {
-      window.removeEventListener('resize', updateViewportSize)
-      window.removeEventListener('orientationchange', updateViewportSize)
-      window.removeEventListener('focusin', updateViewportSize)
-      window.removeEventListener('focusout', updateViewportSize)
-      window.visualViewport?.removeEventListener('resize', updateViewportSize)
-      window.visualViewport?.removeEventListener('scroll', updateViewportSize)
+      if (rafId !== null) window.cancelAnimationFrame(rafId)
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+      if (timeoutId2 !== null) window.clearTimeout(timeoutId2)
+      window.removeEventListener('pageshow', scheduleViewportUpdate)
+      document.removeEventListener('visibilitychange', scheduleViewportUpdate)
+      window.removeEventListener('resize', scheduleViewportUpdate)
+      window.removeEventListener('orientationchange', scheduleViewportUpdate)
+      window.removeEventListener('focusin', scheduleViewportUpdate)
+      window.removeEventListener('focusout', scheduleViewportUpdate)
+      window.visualViewport?.removeEventListener('resize', scheduleViewportUpdate)
+      window.visualViewport?.removeEventListener('scroll', scheduleViewportUpdate)
       root.style.removeProperty('--app-vw')
       root.style.removeProperty('--layout-vh')
       root.style.removeProperty('--app-vh')
