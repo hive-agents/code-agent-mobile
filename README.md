@@ -2,6 +2,13 @@
 
 Mobile-first web UI for Claude Code data using Claude Agent SDK with a WebSocket backend.
 
+![cam0](https://github.com/user-attachments/assets/425bcfe0-ee56-4f03-852f-b570e14e3c0c)
+
+![cam1](https://github.com/user-attachments/assets/48903685-c36d-4a2a-a3bd-5bb74025c410)
+
+<img width="1179" height="2556" alt="cam2" src="https://github.com/user-attachments/assets/aabda5b8-eb08-49d0-ae86-02e7cc081571" />
+
+
 ## Setup
 
 ```bash
