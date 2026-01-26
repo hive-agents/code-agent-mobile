@@ -403,13 +403,21 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement
+    const baselineHeightRef = { current: window.innerHeight }
+    const baselineWidthRef = { current: window.innerWidth }
     const updateViewportSize = () => {
       const viewport = window.visualViewport
       const layoutWidth = window.innerWidth
       const layoutHeight = window.innerHeight
       const viewportWidth = viewport?.width ?? layoutWidth
       const viewportHeight = viewport?.height ?? layoutHeight
-      const baseHeight = Math.max(layoutHeight, viewportHeight)
+      const widthDelta = Math.abs(layoutWidth - baselineWidthRef.current)
+      if (widthDelta > 40) {
+        baselineWidthRef.current = layoutWidth
+        baselineHeightRef.current = layoutHeight
+      }
+      const baseHeight = Math.max(baselineHeightRef.current, layoutHeight, viewportHeight)
+      baselineHeightRef.current = baseHeight
       const heightDelta = Math.max(0, baseHeight - viewportHeight)
       const keyboardActive = heightDelta > 120
       const appHeight = keyboardActive ? viewportHeight : baseHeight
