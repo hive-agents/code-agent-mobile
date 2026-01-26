@@ -409,15 +409,13 @@ export default function App() {
       const layoutHeight = window.innerHeight
       const viewportWidth = viewport?.width ?? layoutWidth
       const viewportHeight = viewport?.height ?? layoutHeight
-      const offsetTop = viewport?.offsetTop ?? 0
-      const heightDelta = Math.max(0, layoutHeight - viewportHeight)
+      const baseHeight = Math.max(layoutHeight, viewportHeight)
+      const heightDelta = Math.max(0, baseHeight - viewportHeight)
       const keyboardActive = heightDelta > 120
-      const appHeight = keyboardActive ? viewportHeight : layoutHeight
-      const appOffsetTop = keyboardActive ? offsetTop : 0
+      const appHeight = keyboardActive ? viewportHeight : baseHeight
       root.style.setProperty('--app-vw', `${Math.round(viewportWidth)}px`)
-      root.style.setProperty('--layout-vh', `${Math.round(layoutHeight)}px`)
+      root.style.setProperty('--layout-vh', `${Math.round(baseHeight)}px`)
       root.style.setProperty('--app-vh', `${Math.round(appHeight)}px`)
-      root.style.setProperty('--app-offset-top', `${Math.round(appOffsetTop)}px`)
     }
 
     updateViewportSize()
@@ -437,7 +435,6 @@ export default function App() {
       root.style.removeProperty('--app-vw')
       root.style.removeProperty('--layout-vh')
       root.style.removeProperty('--app-vh')
-      root.style.removeProperty('--app-offset-top')
     }
   }, [])
 

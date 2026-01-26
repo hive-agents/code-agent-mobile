@@ -5,7 +5,6 @@
   --app-vw: 100%;
   --layout-vh: 100dvh;
   --app-vh: 100dvh;
-  --app-offset-top: 0px;
   --font-display: "Fraunces", serif;
   --font-body: "IBM Plex Sans", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -13,7 +12,7 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --label-sticky-top: calc(var(--safe-top) + 52px);
+  --label-sticky-top: calc(var(--safe-top) + 12px);
 
   --bg: #f1d9bf;
   --bg-glow: #f1d9bf;
@@ -134,7 +133,6 @@ body::before {
   width: var(--app-vw);
   max-width: var(--app-vw);
   overflow: hidden;
-  transform: translateY(var(--app-offset-top, 0px));
 }
 
 .app-header {
@@ -755,6 +753,7 @@ body::before {
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
+  padding-top: var(--safe-top);
 }
 
 .drawer.open {
