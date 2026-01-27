@@ -251,6 +251,8 @@ body::before {
 .chat-scroll {
   overflow-y: auto;
   overflow-x: hidden;
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 100%;
   padding: calc(8px + var(--safe-top)) calc(16px + var(--safe-right)) 24px calc(16px + var(--safe-left));
@@ -659,9 +661,9 @@ body::before {
   background: transparent;
   width: 100%;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
-  z-index: 6;
+  z-index: 12;
 }
 
 .composer-inner {
@@ -706,7 +708,7 @@ body::before {
   top: 50%;
   transform: translateY(-50%);
   transition: transform 0.25s ease, opacity 0.25s ease, top 0.25s ease;
-  z-index: 2;
+  z-index: 13;
 }
 
 .composer.focused .composer-inner {
