@@ -126,6 +126,7 @@ body::before {
 
 .app {
   --composer-action-lift: 0px;
+  --composer-overlap: calc(86px + var(--composer-action-lift));
   position: relative;
   display: grid;
   grid-template-rows: 1fr auto;
@@ -1035,7 +1036,7 @@ body::before {
 .drawer-actions {
   position: absolute;
   right: calc(16px + var(--safe-right));
-  bottom: calc(16px + var(--safe-bottom));
+  bottom: calc(16px + var(--safe-bottom) + var(--composer-overlap));
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1143,7 +1144,8 @@ body::before {
 }
 
 .conversation-list {
-  padding: 0 calc(12px + var(--safe-right)) calc(88px + var(--safe-bottom)) calc(12px + var(--safe-left));
+  padding: 0 calc(12px + var(--safe-right))
+    calc(88px + var(--safe-bottom) + var(--composer-overlap)) calc(12px + var(--safe-left));
   overflow-y: auto;
   display: flex;
   flex-direction: column;
