@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { hash as bcryptHash } from 'bcryptjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useDrawerSwipe } from './useDrawerSwipe'
 
 type Block = {
   type: 'text' | 'tool_use' | 'tool_result' | 'reasoning' | 'attachment' | 'other'
@@ -269,6 +270,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const conversationSearchInputRef = useRef<HTMLInputElement | null>(null)
+  const drawerRef = useRef<HTMLElement | null>(null)
 
   const refreshAuthStatus = useCallback(async () => {
     setAuthStatusLoading(true)
@@ -1187,6 +1189,14 @@ export default function App() {
 
   const builtinLoginRequired = authMode === 'builtin' && !authAuthorized
   const externalLoginRequired = authMode === 'external' && !authAuthorized
+
+  useDrawerSwipe({
+    drawerOpen,
+    setDrawerOpen,
+    drawerRef,
+    disabled: builtinLoginRequired || externalLoginRequired || projectPickerOpen || permissionRequest !== null || questionRequest !== null
+  })
+
   const connectionBannerText = useMemo(() => {
     if (!isOnline) return 'Offline'
     if (connectionNotice) return connectionNotice
@@ -1285,7 +1295,7 @@ export default function App() {
           setModelMenuOpen(false)
         }}
       />
-      <aside className={drawerOpen ? 'drawer open' : 'drawer'}>
+      <aside ref={drawerRef} className={drawerOpen ? 'drawer open' : 'drawer'}>
         <div className="drawer-header">Conversations</div>
         {conversationSearchOpen ? (
           <div className="drawer-search">
