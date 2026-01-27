@@ -581,11 +581,16 @@ export default function App() {
     if (!node || !inner) return
     const rect = node.getBoundingClientRect()
     const innerRect = inner.getBoundingClientRect()
-    const viewportWidth = window.visualViewport?.width ?? window.innerWidth
+    const viewport = window.visualViewport
+    const offsetLeft = viewport?.offsetLeft ?? 0
+    const offsetTop = viewport?.offsetTop ?? 0
+    const layoutWidth = window.innerWidth
+    const layoutHeight = window.innerHeight
     const rightInset = 12
     const lift = composerFocusedRef.current ? 56 : 0
-    const right = Math.max(0, viewportWidth - innerRect.right + rightInset)
-    const top = Math.max(0, innerRect.top + innerRect.height / 2 - rect.height / 2 - lift)
+    const right = Math.max(0, layoutWidth - (innerRect.right + offsetLeft) + rightInset)
+    const rawTop = innerRect.top + offsetTop + innerRect.height / 2 - rect.height / 2 - lift
+    const top = Math.min(Math.max(0, rawTop), layoutHeight - rect.height)
     const root = document.documentElement
     root.style.setProperty('--composer-actions-right', `${right}px`)
     root.style.setProperty('--composer-actions-top', `${top}px`)
