@@ -670,6 +670,7 @@ body::before {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
+  clip-path: inset(calc(-1 * var(--composer-action-lift)) 0 0 0);
   position: relative;
   z-index: 12;
 }
@@ -711,11 +712,11 @@ body::before {
   display: flex;
   gap: 6px;
   align-items: center;
-  position: fixed;
-  right: var(--composer-actions-right, calc(28px + var(--safe-right)));
-  top: var(--composer-actions-top, auto);
-  transform: none;
-  transition: top 0.25s ease, right 0.25s ease, opacity 0.25s ease;
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(calc(-50% - var(--composer-action-lift)));
+  transition: transform 0.25s ease, opacity 0.25s ease;
   z-index: 13;
 }
 
