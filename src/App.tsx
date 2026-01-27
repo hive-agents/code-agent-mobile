@@ -1755,13 +1755,15 @@ export default function App() {
                     ) : null}
                 </div>
                 <div className="tool-stack-list">
-                  {item.entries.map((entry) => {
+                  {item.entries.map((entry, entryIndex) => {
                     const isLatestTool = entry.kind === 'tool' && entry.tool.id === latestToolId
+                    const stackIndex = item.entries.length - 1 - entryIndex
                     if (entry.kind === 'message') {
                       return (
                         <div
                           key={entry.id}
                           className={`tool-stack-entry${isLatestTool ? ' latest-tool' : ''}`}
+                          style={{ '--stack-index': stackIndex } as React.CSSProperties}
                         >
                           <div className="tool-stack-message">
                             <div className="tool-stack-message-label">Agent update</div>
@@ -1776,6 +1778,7 @@ export default function App() {
                       <div
                         key={tool.id}
                         className={`tool-stack-entry${isLatestTool ? ' latest-tool' : ''}`}
+                        style={{ '--stack-index': stackIndex } as React.CSSProperties}
                       >
                         <div className={isOpen ? 'tool-card open' : 'tool-card'}>
                           <button

@@ -554,9 +554,11 @@ body::before {
 }
 
 .tool-stack-entry {
+  --stack-index: 0;
   margin-bottom: 8px;
   overflow: hidden;
   transition: max-height 0.3s ease, opacity 0.3s ease, transform 0.3s ease, margin 0.3s ease;
+  transition-delay: calc(var(--stack-index) * 20ms);
   max-height: 2000px;
   opacity: 1;
   transform: translateY(0) scale(1);
@@ -569,7 +571,7 @@ body::before {
 .tool-stack.collapsed .tool-stack-entry {
   max-height: 0;
   opacity: 0;
-  transform: translateY(-10px) scale(0.97);
+  transform: translateY(calc(var(--stack-index) * -6px)) scale(calc(1 - (var(--stack-index) * 0.01)));
   margin-bottom: 0;
   pointer-events: none;
 }
@@ -579,6 +581,7 @@ body::before {
   opacity: 1;
   transform: translateY(0) scale(1);
   pointer-events: auto;
+  transition-delay: 0ms;
 }
 
 .tool-stack-message {
