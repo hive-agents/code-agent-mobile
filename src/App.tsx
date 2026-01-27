@@ -298,6 +298,7 @@ export default function App() {
   const conversationSearchInputRef = useRef<HTMLInputElement | null>(null)
   const drawerRef = useRef<HTMLElement | null>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const composerActionsRef = useRef<HTMLDivElement | null>(null)
   const composerFocusedRef = useRef(false)
 
   const refreshAuthStatus = useCallback(async () => {
@@ -573,11 +574,45 @@ export default function App() {
     node.style.overflowY = node.scrollHeight > maxHeight ? 'auto' : 'hidden'
   }, [])
 
+  const updateComposerActionsPosition = useCallback(() => {
+    const node = composerActionsRef.current
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight
+    const right = Math.max(0, viewportWidth - rect.right)
+    const bottom = Math.max(0, viewportHeight - rect.bottom)
+    const root = document.documentElement
+    root.style.setProperty('--composer-actions-right', `${right}px`)
+    root.style.setProperty('--composer-actions-bottom', `${bottom}px`)
+  }, [])
+
   useEffect(() => {
     const node = composerTextareaRef.current
     if (!node) return
     resizeComposerTextarea(node, composerFocusedRef.current)
   }, [inputText, resizeComposerTextarea])
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (!composerFocused) {
+      root.style.removeProperty('--composer-actions-right')
+      root.style.removeProperty('--composer-actions-bottom')
+      return
+    }
+    updateComposerActionsPosition()
+    const handleResize = () => updateComposerActionsPosition()
+    window.addEventListener('resize', handleResize)
+    window.addEventListener('orientationchange', handleResize)
+    window.visualViewport?.addEventListener('resize', handleResize)
+    window.visualViewport?.addEventListener('scroll', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('orientationchange', handleResize)
+      window.visualViewport?.removeEventListener('resize', handleResize)
+      window.visualViewport?.removeEventListener('scroll', handleResize)
+    }
+  }, [composerFocused, updateComposerActionsPosition])
 
   useEffect(() => {
     const root = document.documentElement
@@ -1997,6 +2032,7 @@ export default function App() {
             }}
             onKeyDown={handleKeyDown}
             onFocus={(event) => {
+              updateComposerActionsPosition()
               setComposerFocused(true)
               resizeComposerTextarea(event.currentTarget, true)
             }}
@@ -2005,7 +2041,7 @@ export default function App() {
               resizeComposerTextarea(event.currentTarget, false)
             }}
           />
-          <div className="composer-actions">
+          <div className="composer-actions" ref={composerActionsRef}>
             <button
               type="button"
               className={planMode ? 'plan-toggle active' : 'plan-toggle'}

@@ -670,7 +670,6 @@ body::before {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
-  clip-path: inset(calc(-1 * var(--composer-action-lift)) 0 0 0);
   position: relative;
   z-index: 12;
 }
@@ -725,6 +724,12 @@ body::before {
 }
 
 .composer.focused .composer-actions {
+  position: fixed;
+  right: var(--composer-actions-right, calc(28px + var(--safe-right)));
+  bottom: var(--composer-actions-bottom, calc(18px + var(--safe-bottom) + 24px));
+  top: auto;
+  left: auto;
+  transform: translateY(calc(-1 * var(--composer-action-lift)));
   z-index: 13;
 }
 
