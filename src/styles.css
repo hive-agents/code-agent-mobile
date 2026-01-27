@@ -665,14 +665,14 @@ body::before {
   background: transparent;
   width: 100%;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
+  clip-path: inset(calc(-1 * var(--composer-action-lift)) 0 0 0);
   position: relative;
   z-index: 12;
 }
 
 .composer.focused {
   --composer-action-lift: 56px;
-  padding-top: calc(12px + var(--composer-action-lift));
 }
 
 .composer-inner {
