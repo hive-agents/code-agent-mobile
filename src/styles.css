@@ -656,14 +656,23 @@ body::before {
 }
 
 .composer {
-  padding: 12px calc(16px + var(--safe-right)) calc(18px + var(--safe-bottom)) calc(16px + var(--safe-left));
+  --composer-action-lift: 0px;
+  padding-top: 12px;
+  padding-right: calc(16px + var(--safe-right));
+  padding-bottom: calc(18px + var(--safe-bottom));
+  padding-left: calc(16px + var(--safe-left));
   border-top: none;
   background: transparent;
   width: 100%;
   max-width: 100%;
-  overflow: visible;
+  overflow: hidden;
   position: relative;
   z-index: 12;
+}
+
+.composer.focused {
+  --composer-action-lift: 56px;
+  padding-top: calc(12px + var(--composer-action-lift));
 }
 
 .composer-inner {
@@ -706,7 +715,7 @@ body::before {
   position: absolute;
   right: 12px;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(calc(-50% - var(--composer-action-lift)));
   transition: transform 0.25s ease, opacity 0.25s ease, top 0.25s ease;
   z-index: 13;
 }
@@ -716,8 +725,7 @@ body::before {
 }
 
 .composer.focused .composer-actions {
-  transform: translateY(calc(-50% - 56px));
-  z-index: 8;
+  z-index: 13;
 }
 
 .plan-toggle {
