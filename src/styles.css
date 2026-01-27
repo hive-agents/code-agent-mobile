@@ -726,10 +726,10 @@ body::before {
 .composer.focused .composer-actions {
   position: fixed;
   right: var(--composer-actions-right, calc(28px + var(--safe-right)));
-  bottom: var(--composer-actions-bottom, calc(18px + var(--safe-bottom) + 24px));
-  top: auto;
+  top: var(--composer-actions-top, auto);
+  bottom: auto;
   left: auto;
-  transform: translateY(calc(-1 * var(--composer-action-lift)));
+  transform: none;
   z-index: 13;
 }
 
