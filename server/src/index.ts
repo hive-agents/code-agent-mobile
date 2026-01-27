@@ -17,6 +17,37 @@ import {
 type TextAttachment = { type: 'text'; name: string; content: string }
 type ImageAttachment = { type: 'image'; name: string; mediaType: string; data: string }
 type Attachment = TextAttachment | ImageAttachment
+type QuestionPrompt = {
+  question: string
+  header: string
+  options: Array<{ label: string; description: string }>
+  multiSelect: boolean
+}
+
+type PendingPermission = {
+  requestId: string
+  resolve: (result: PermissionResult) => void
+  toolName: string
+  toolUseID: string
+  toolInput: Record<string, unknown>
+  blockedPath?: string
+  decisionReason?: string
+  suggestions?: PermissionUpdate[]
+}
+
+type PendingQuestion = {
+  requestId: string
+  resolve: (answers: Record<string, string>) => void
+  toolUseId: string
+  questions: QuestionPrompt[]
+}
+
+type PendingExitPlan = {
+  requestId: string
+  resolve: (choice: 'auto' | 'manual' | 'deny') => void
+  toolUseId: string
+  input: Record<string, unknown>
+}
 
 type ClientMessage =
   | { type: 'init' }
@@ -50,6 +81,9 @@ const AUTH_EXTERNAL_VERIFY_URL = process.env.CAM_AUTH_EXTERNAL_VERIFY_URL ?? ''
 const AUTH_EXTERNAL_VERIFY_TIMEOUT_MS = Number(process.env.CAM_AUTH_EXTERNAL_VERIFY_TIMEOUT_MS ?? 5000)
 
 const wss = new WebSocketServer({ noServer: true })
+const pendingPermissions = new Map<string, PendingPermission>()
+const pendingQuestions = new Map<string, PendingQuestion>()
+const pendingExitPlans = new Map<string, PendingExitPlan>()
 
 function base64UrlEncode(value: string | Buffer) {
   const buffer = typeof value === 'string' ? Buffer.from(value, 'utf8') : value
@@ -427,28 +461,43 @@ function resolveModelLabel(model?: string | null) {
   return null
 }
 
+function sendPendingRequests(send: (payload: unknown) => void) {
+  for (const pending of pendingPermissions.values()) {
+    send({
+      type: 'permission_request',
+      requestId: pending.requestId,
+      toolName: pending.toolName,
+      toolInput: pending.toolInput,
+      blockedPath: pending.blockedPath,
+      decisionReason: pending.decisionReason,
+      toolUseID: pending.toolUseID,
+      suggestions: pending.suggestions
+    })
+  }
+  for (const pending of pendingQuestions.values()) {
+    send({
+      type: 'user_question',
+      requestId: pending.requestId,
+      toolUseId: pending.toolUseId,
+      questions: pending.questions
+    })
+  }
+  for (const pending of pendingExitPlans.values()) {
+    send({
+      type: 'exit_plan_request',
+      requestId: pending.requestId,
+      toolUseId: pending.toolUseId,
+      input: pending.input
+    })
+  }
+}
+
 wss.on('connection', (socket: WebSocket) => {
   let activeSessionId: string | null = null
   let activeProject: string | null = null
   let activeModel = DEFAULT_MODEL
   let isStreaming = false
   let activeQuery: Query | null = null
-
-  const pendingPermissions = new Map<string, {
-    resolve: (result: PermissionResult) => void
-    toolName: string
-    toolUseID: string
-    toolInput: Record<string, unknown>
-  }>()
-
-  const pendingQuestions = new Map<string, {
-    resolve: (answers: Record<string, string>) => void
-    toolUseId: string
-  }>()
-  const pendingExitPlans = new Map<string, {
-    resolve: (choice: 'auto' | 'manual' | 'deny') => void
-    toolUseId: string
-  }>()
 
   const send = (payload: unknown) => {
     socket.send(JSON.stringify(payload))
@@ -489,6 +538,7 @@ wss.on('connection', (socket: WebSocket) => {
         messages: state.messages,
         model: modelLabel
       })
+      sendPendingRequests(send)
       return
     }
 
@@ -641,7 +691,16 @@ wss.on('connection', (socket: WebSocket) => {
             })
 
             return new Promise<PermissionResult>((resolve) => {
-              pendingPermissions.set(requestId, { resolve, toolName, toolUseID, toolInput: input })
+              pendingPermissions.set(requestId, {
+                requestId,
+                resolve,
+                toolName,
+                toolUseID,
+                toolInput: input,
+                blockedPath,
+                decisionReason,
+                suggestions
+              })
 
               signal.addEventListener('abort', () => {
                 pendingPermissions.delete(requestId)
@@ -684,7 +743,12 @@ wss.on('connection', (socket: WebSocket) => {
                 })
 
                 const choice = await new Promise<'auto' | 'manual' | 'deny'>((resolve) => {
-                  pendingExitPlans.set(requestId, { resolve, toolUseId: block.id })
+                  pendingExitPlans.set(requestId, {
+                    requestId,
+                    resolve,
+                    toolUseId: block.id,
+                    input: (block.input ?? {}) as Record<string, unknown>
+                  })
                 })
 
                 await activeQuery?.streamInput((async function* () {
@@ -706,14 +770,7 @@ wss.on('connection', (socket: WebSocket) => {
 
               if (block.type === 'tool_use' && block.name === 'AskUserQuestion') {
                 const requestId = crypto.randomUUID()
-                const input = block.input as {
-                  questions: Array<{
-                    question: string
-                    header: string
-                    options: Array<{ label: string; description: string }>
-                    multiSelect: boolean
-                  }>
-                }
+                const input = block.input as { questions: QuestionPrompt[] }
 
                 // Send question to frontend
                 send({
@@ -725,7 +782,12 @@ wss.on('connection', (socket: WebSocket) => {
 
                 // Wait for user response
                 const answers = await new Promise<Record<string, string>>((resolve) => {
-                  pendingQuestions.set(requestId, { resolve, toolUseId: block.id })
+                  pendingQuestions.set(requestId, {
+                    requestId,
+                    resolve,
+                    toolUseId: block.id,
+                    questions: input.questions
+                  })
                 })
 
                 // Stream the tool_result back to SDK
