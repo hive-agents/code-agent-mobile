@@ -550,7 +550,35 @@ body::before {
 .tool-stack-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+}
+
+.tool-stack-entry {
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.3s ease, transform 0.3s ease, margin 0.3s ease;
+  max-height: 2000px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.tool-stack-entry:last-child {
+  margin-bottom: 0;
+}
+
+.tool-stack.collapsed .tool-stack-entry {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-10px) scale(0.97);
+  margin-bottom: 0;
+  pointer-events: none;
+}
+
+.tool-stack.collapsed .tool-stack-entry.latest-tool {
+  max-height: 2000px;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
 }
 
 .tool-stack-message {

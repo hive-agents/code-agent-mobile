@@ -1674,12 +1674,12 @@ export default function App() {
           const canCollapse = toolEntries.length > 1 || hasStackMessages
           const isStackExpanded = !canCollapse || !!expandedStacks[item.id]
           const stackCollapsed = canCollapse && !isStackExpanded
-          const entriesToShow = isStackExpanded ? item.entries : toolEntries.slice(0, 1)
+          const latestToolId = toolEntries.length > 0 ? toolEntries[toolEntries.length - 1].tool.id : null
           const isNewToolStack = !seenMessageIds.has(item.id)
 
           return (
             <div key={item.id} className={`chat-item${isNewToolStack ? ' animate-in' : ''}`}>
-              <div className={stackCollapsed ? 'tool-stack stacked' : 'tool-stack'}>
+              <div className={stackCollapsed ? 'tool-stack stacked collapsed' : 'tool-stack'}>
                 <div className="tool-stack-header">
                   <div className="tool-stack-title">
                     Tool uses
@@ -1695,45 +1695,56 @@ export default function App() {
                     >
                       {isStackExpanded ? 'Collapse stack' : `Stack x${toolEntries.length}`}
                     </button>
-                  ) : null}
+                    ) : null}
                 </div>
                 <div className="tool-stack-list">
-                  {entriesToShow.map((entry) => {
+                  {item.entries.map((entry) => {
+                    const isLatestTool = entry.kind === 'tool' && entry.tool.id === latestToolId
                     if (entry.kind === 'message') {
                       return (
-                        <div key={entry.id} className="tool-stack-message">
-                          <div className="tool-stack-message-label">Agent update</div>
-                          {renderBlocks(entry.blocks, `${entry.id}-stack`)}
+                        <div
+                          key={entry.id}
+                          className={`tool-stack-entry${isLatestTool ? ' latest-tool' : ''}`}
+                        >
+                          <div className="tool-stack-message">
+                            <div className="tool-stack-message-label">Agent update</div>
+                            {renderBlocks(entry.blocks, `${entry.id}-stack`)}
+                          </div>
                         </div>
                       )
                     }
                     const tool = entry.tool
                     const isOpen = !!expandedTools[tool.id]
                     return (
-                      <div key={tool.id} className={isOpen ? 'tool-card open' : 'tool-card'}>
-                        <button
-                          type="button"
-                          className="tool-line"
-                          onClick={() => toggleTool(tool.id)}
-                        >
-                          <span className="tool-line-title">Tool use: {tool.name}</span>
-                        </button>
-                        {isOpen ? (
-                          <div className="tool-details">
-                            {tool.input ? (
-                              <div className="tool-detail">
-                                <div className="tool-detail-label">Input</div>
-                                <pre>{tool.input}</pre>
-                              </div>
-                            ) : null}
-                            {tool.result ? (
-                              <div className="tool-detail">
-                                <div className="tool-detail-label">Result</div>
-                                <pre>{tool.result}</pre>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
+                      <div
+                        key={tool.id}
+                        className={`tool-stack-entry${isLatestTool ? ' latest-tool' : ''}`}
+                      >
+                        <div className={isOpen ? 'tool-card open' : 'tool-card'}>
+                          <button
+                            type="button"
+                            className="tool-line"
+                            onClick={() => toggleTool(tool.id)}
+                          >
+                            <span className="tool-line-title">Tool use: {tool.name}</span>
+                          </button>
+                          {isOpen ? (
+                            <div className="tool-details">
+                              {tool.input ? (
+                                <div className="tool-detail">
+                                  <div className="tool-detail-label">Input</div>
+                                  <pre>{tool.input}</pre>
+                                </div>
+                              ) : null}
+                              {tool.result ? (
+                                <div className="tool-detail">
+                                  <div className="tool-detail-label">Result</div>
+                                  <pre>{tool.result}</pre>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     )
                   })}
