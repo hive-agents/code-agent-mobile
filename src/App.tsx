@@ -974,6 +974,18 @@ export default function App() {
     action()
   }
 
+  const handleSendClick = () => {
+    if (!canSend) return
+    suppressComposerBlurRef.current = false
+    sendMessage()
+    setComposerFocused(false)
+    const node = composerTextareaRef.current
+    if (node) {
+      resizeComposerTextarea(node, false)
+      node.blur()
+    }
+  }
+
   const handleFileChange: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
     const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp']
     const files = event.target.files
@@ -2183,17 +2195,9 @@ export default function App() {
             <button
               type="button"
               className="send-button"
-              onClick={() => {
-                if (!canSend) return
-                sendMessage()
-                setComposerFocused(false)
-                const node = composerTextareaRef.current
-                if (node) {
-                  node.blur()
-                  resizeComposerTextarea(node, false)
-                }
-              }}
-              data-composer-action="collapse"
+              onClick={handleSendClick}
+              onMouseDown={handleComposerActionMouseDown}
+              onTouchStart={handleComposerActionTouchStart}
               disabled={!canSend}
               aria-label="Send prompt"
             >
