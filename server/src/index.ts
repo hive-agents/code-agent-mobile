@@ -1,9 +1,13 @@
 import { WebSocketServer, type RawData, type WebSocket } from 'ws'
 import crypto from 'crypto'
+import fs from 'fs/promises'
 import http, { type IncomingMessage, type ServerResponse } from 'http'
 import https from 'https'
+import os from 'os'
+import path from 'path'
 import type { Duplex } from 'stream'
 import { query, type Query, type PermissionMode, type PermissionResult, type PermissionUpdate, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { Codex, type ThreadItem } from '@openai/codex-sdk'
 import {
   getBootstrapState,
   listConversations,
@@ -12,6 +16,7 @@ import {
   createDirectory,
   watchConversations,
   type ConversationSummary,
+  type ConversationProvider,
   type UIBlock,
   type UIMessage
 } from './claudeStore.js'
@@ -53,7 +58,7 @@ type PendingExitPlan = {
 
 type ClientMessage =
   | { type: 'init' }
-  | { type: 'select_conversation'; sessionId: string; project?: string }
+  | { type: 'select_conversation'; sessionId: string; project?: string; provider?: ConversationProvider }
   | { type: 'new_conversation'; project?: string }
   | { type: 'list_dirs'; path?: string | null }
   | { type: 'create_dir'; parent?: string | null; name: string }
@@ -68,6 +73,7 @@ const SONNET_MODEL = process.env.CLAUDE_SONNET_MODEL ?? 'claude-sonnet-4-5-20250
 const OPUS_MODEL = process.env.CLAUDE_OPUS_MODEL ?? 'claude-opus-4-5-20251101'
 const DEFAULT_MODEL =
   process.env.CLAUDE_MODEL ?? process.env.ANTHROPIC_MODEL ?? SONNET_MODEL
+const codex = new Codex()
 
 const AUTH_MODE = (process.env.CAM_AUTH_MODE ?? 'builtin').toLowerCase()
 const AUTH_COOKIE_NAME = process.env.CAM_AUTH_COOKIE_NAME ?? 'cam_session'
@@ -396,6 +402,112 @@ function sdkMessageToUI(message: SDKMessage): UIMessage | null {
   }
 }
 
+function codexItemToMessages(item: ThreadItem): UIMessage[] {
+  const now = new Date().toISOString()
+  if (item.type === 'agent_message') {
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [{ type: 'text', text: item.text ?? '' }],
+        timestamp: now
+      }
+    ]
+  }
+  if (item.type === 'reasoning') {
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [{ type: 'reasoning', text: item.text ?? '' }],
+        timestamp: now,
+        meta: { reasoningStatus: 'provided' }
+      }
+    ]
+  }
+  if (item.type === 'command_execution') {
+    const input = JSON.stringify({ command: item.command }, null, 2)
+    const resultLines = []
+    resultLines.push(`status: ${item.status}`)
+    if (item.exit_code !== undefined) {
+      resultLines.push(`exit_code: ${item.exit_code}`)
+    }
+    if (item.aggregated_output) {
+      resultLines.push('', item.aggregated_output)
+    }
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [
+          { type: 'tool_use', name: 'shell_command', input },
+          { type: 'tool_result', text: resultLines.join('\n') }
+        ],
+        timestamp: now
+      }
+    ]
+  }
+  if (item.type === 'mcp_tool_call') {
+    const input = JSON.stringify(item.arguments ?? {}, null, 2)
+    let output = ''
+    if (item.result?.structured_content !== undefined) {
+      output = JSON.stringify(item.result.structured_content, null, 2)
+    } else if (item.result?.content) {
+      output = JSON.stringify(item.result.content, null, 2)
+    } else if (item.error?.message) {
+      output = item.error.message
+    }
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [
+          { type: 'tool_use', name: item.tool ?? 'mcp_tool', input },
+          { type: 'tool_result', text: output }
+        ],
+        timestamp: now
+      }
+    ]
+  }
+  if (item.type === 'file_change') {
+    const input = JSON.stringify(item.changes ?? [], null, 2)
+    const output = `status: ${item.status}`
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [
+          { type: 'tool_use', name: 'file_change', input },
+          { type: 'tool_result', text: output }
+        ],
+        timestamp: now
+      }
+    ]
+  }
+  if (item.type === 'web_search') {
+    const input = JSON.stringify({ query: item.query }, null, 2)
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [{ type: 'tool_use', name: 'web_search', input }],
+        timestamp: now
+      }
+    ]
+  }
+  if (item.type === 'error') {
+    return [
+      {
+        id: item.id ?? crypto.randomUUID(),
+        role: 'assistant',
+        blocks: [{ type: 'other', text: item.message ?? 'Error' }],
+        timestamp: now
+      }
+    ]
+  }
+  return []
+}
+
 function buildPrompt(text: string, attachments: Attachment[]) {
   const trimmed = text.trim()
   const textAttachments = attachments.filter((a): a is TextAttachment => a.type === 'text')
@@ -434,6 +546,59 @@ function buildUserMessage(text: string, attachments: Attachment[]): UIMessage {
   }
 }
 
+function mediaTypeExtension(mediaType: string) {
+  const normalized = mediaType.toLowerCase()
+  if (normalized.includes('png')) return '.png'
+  if (normalized.includes('jpeg') || normalized.includes('jpg')) return '.jpg'
+  if (normalized.includes('webp')) return '.webp'
+  if (normalized.includes('gif')) return '.gif'
+  return ''
+}
+
+async function writeCodexImages(attachments: ImageAttachment[]) {
+  if (attachments.length === 0) {
+    return { paths: [] as string[], cleanup: async () => {} }
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cam-codex-'))
+  const paths: string[] = []
+  try {
+    for (const image of attachments) {
+      const ext = mediaTypeExtension(image.mediaType)
+      const filename = `image-${crypto.randomUUID()}${ext}`
+      const filePath = path.join(tempDir, filename)
+      await fs.writeFile(filePath, Buffer.from(image.data, 'base64'))
+      paths.push(filePath)
+    }
+  } catch (error) {
+    await fs.rm(tempDir, { recursive: true, force: true })
+    throw error
+  }
+
+  return {
+    paths,
+    cleanup: async () => {
+      await fs.rm(tempDir, { recursive: true, force: true })
+    }
+  }
+}
+
+async function isGitRepository(startPath: string) {
+  let current = path.resolve(startPath)
+  while (true) {
+    const candidate = path.join(current, '.git')
+    try {
+      const stat = await fs.stat(candidate)
+      if (stat.isDirectory() || stat.isFile()) return true
+    } catch {
+    }
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+  return false
+}
+
 function buildExitPlanResult(choice: 'auto' | 'manual' | 'deny') {
   if (choice === 'auto') {
     return 'User approved the plan and wants edits auto-accepted.'
@@ -451,6 +616,7 @@ function resolveModel(model?: string | null) {
   const normalized = trimmed.toLowerCase()
   if (normalized === 'sonnet-4.5') return SONNET_MODEL
   if (normalized === 'opus-4.5') return OPUS_MODEL
+  if (normalized === 'gpt-5.2-codex') return 'gpt-5.2-codex'
   return trimmed
 }
 
@@ -459,9 +625,20 @@ function resolveModelLabel(model?: string | null) {
   const normalized = model.trim().toLowerCase()
   const opusMatch = OPUS_MODEL.toLowerCase()
   const sonnetMatch = SONNET_MODEL.toLowerCase()
+  if (normalized.includes('gpt-5.2-codex') || normalized.includes('codex')) return 'gpt-5.2-codex'
   if (normalized === opusMatch || normalized.includes('opus')) return 'opus-4.5'
   if (normalized === sonnetMatch || normalized.includes('sonnet')) return 'sonnet-4.5'
   return null
+}
+
+function resolveProviderForModel(model?: string | null): ConversationProvider | null {
+  if (!model) return null
+  const normalized = model.trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized.includes('gpt-5.2-codex') || normalized.includes('codex')) {
+    return 'codex'
+  }
+  return 'claude'
 }
 
 function sendPendingRequests(send: (payload: unknown) => void) {
@@ -499,12 +676,14 @@ wss.on('connection', (socket: WebSocket) => {
   let activeSessionId: string | null = null
   let activeProject: string | null = null
   let activeModel = DEFAULT_MODEL
+  let activeProvider: ConversationProvider | null = resolveProviderForModel(activeModel)
   let isStreaming = false
   let activeQuery: Query | null = null
   let lastConversationSummaries: ConversationSummary[] = []
   let activeConversationUpdatedAt: number | null = null
   let lastMessageCount = 0
   let syncInFlight = false
+  let forceNewConversation = false
 
   const send = (payload: unknown) => {
     socket.send(JSON.stringify(payload))
@@ -521,7 +700,7 @@ wss.on('connection', (socket: WebSocket) => {
     syncInFlight = true
     try {
       const project = summary.project || activeProject || undefined
-      const { messages, model } = await loadConversation(activeSessionId, project)
+      const { messages, model, provider } = await loadConversation(activeSessionId, summary.provider, project)
       if (messages.length > lastMessageCount) {
         const nextMessages = messages.slice(lastMessageCount)
         lastMessageCount = messages.length
@@ -532,6 +711,9 @@ wss.on('connection', (socket: WebSocket) => {
       if (model) {
         activeModel = model
       }
+      if (provider) {
+        activeProvider = provider
+      }
       activeConversationUpdatedAt = summary.updatedAt
     } finally {
       syncInFlight = false
@@ -540,7 +722,11 @@ wss.on('connection', (socket: WebSocket) => {
 
   const unsubscribeConversations = watchConversations((conversations) => {
     lastConversationSummaries = conversations
-    send({ type: 'conversations', conversations })
+    const formatted = conversations.map((conversation) => ({
+      ...conversation,
+      model: resolveModelLabel(conversation.model ?? null)
+    }))
+    send({ type: 'conversations', conversations: formatted })
     void syncActiveConversationFromDisk(conversations)
   })
 
@@ -566,49 +752,65 @@ wss.on('connection', (socket: WebSocket) => {
       activeSessionId = state.activeConversationId
       activeProject = state.currentProject
       if (state.model) activeModel = state.model
+      activeProvider = state.provider ?? resolveProviderForModel(activeModel)
       lastConversationSummaries = state.conversations
       activeConversationUpdatedAt = state.activeConversationId
         ? state.conversations.find((conversation) => conversation.sessionId === state.activeConversationId)?.updatedAt ?? null
         : null
       lastMessageCount = state.messages.length
       const modelLabel = resolveModelLabel(state.model ?? activeModel)
+      const formattedConversations = state.conversations.map((conversation) => ({
+        ...conversation,
+        model: resolveModelLabel(conversation.model ?? null)
+      }))
       send({
         type: 'bootstrap',
         currentProject: state.currentProject,
-        conversations: state.conversations,
+        conversations: formattedConversations,
         activeConversationId: state.activeConversationId,
         messages: state.messages,
-        model: modelLabel
+        model: modelLabel,
+        provider: state.provider ?? activeProvider
       })
       sendPendingRequests(send)
+      forceNewConversation = false
       return
     }
 
     if (parsed.type === 'select_conversation') {
       activeSessionId = parsed.sessionId
-      activeProject = parsed.project ?? activeProject
-      const { messages, model } = await loadConversation(parsed.sessionId, parsed.project)
+      const summary = lastConversationSummaries.find(
+        (conversation) =>
+          conversation.sessionId === parsed.sessionId &&
+          (!parsed.provider || conversation.provider === parsed.provider)
+      )
+      activeProject = parsed.project ?? summary?.project ?? activeProject
+      const provider = parsed.provider ?? summary?.provider ?? activeProvider ?? 'claude'
+      const { messages, model } = await loadConversation(parsed.sessionId, provider, activeProject ?? undefined)
       if (model) activeModel = model
+      activeProvider = provider
       lastMessageCount = messages.length
-      activeConversationUpdatedAt = lastConversationSummaries.find(
-        (conversation) => conversation.sessionId === parsed.sessionId
-      )?.updatedAt ?? null
+      activeConversationUpdatedAt = summary?.updatedAt ?? null
       const modelLabel = resolveModelLabel(model ?? activeModel)
       send({
         type: 'conversation',
         sessionId: parsed.sessionId,
         messages,
         currentProject: activeProject,
-        model: modelLabel
+        model: modelLabel,
+        provider: activeProvider
       })
+      forceNewConversation = false
       return
     }
 
     if (parsed.type === 'new_conversation') {
       activeSessionId = null
       if (parsed.project) activeProject = parsed.project
+      activeProvider = null
       lastMessageCount = 0
       activeConversationUpdatedAt = null
+      forceNewConversation = true
       send({ type: 'conversation', sessionId: null, messages: [], currentProject: activeProject })
       return
     }
@@ -674,40 +876,27 @@ wss.on('connection', (socket: WebSocket) => {
         return
       }
       const attachments = parsed.attachments ?? []
-      const hasImages = attachments.some((a) => a.type === 'image')
       const textPrompt = buildPrompt(parsed.text ?? '', attachments)
 
-      // Build content blocks for Claude API
-      const contentBlocks: Array<
-        | { type: 'text'; text: string }
-        | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
-      > = []
-
-      // Add image blocks first (Claude prefers images before text)
-      for (const att of attachments) {
-        if (att.type === 'image') {
-          contentBlocks.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: att.mediaType,
-              data: att.data
-            }
-          })
-        }
-      }
-
-      // Add text prompt (with text attachments embedded)
-      if (textPrompt.trim()) {
-        contentBlocks.push({ type: 'text', text: textPrompt })
-      }
-
-      // If no content, skip
-      if (contentBlocks.length === 0) return
-
       const requestedModel = resolveModel(parsed.model)
+      const provider =
+        resolveProviderForModel(requestedModel ?? activeModel) ?? activeProvider ?? 'claude'
+
+      if (activeSessionId && activeProvider && provider !== activeProvider) {
+        send({ type: 'error', error: 'Cannot change model providers mid-conversation.' })
+        return
+      }
+
       if (requestedModel) {
         activeModel = requestedModel
+      }
+      if (!activeProvider) {
+        activeProvider = provider
+      }
+
+      const hasImages = attachments.some((a) => a.type === 'image')
+      if (!textPrompt.trim() && !hasImages) {
+        return
       }
 
       isStreaming = true
@@ -716,173 +905,278 @@ wss.on('connection', (socket: WebSocket) => {
       lastMessageCount += 1
 
       try {
-        const permissionMode: PermissionMode = parsed.planMode ? 'plan' : 'default'
-        const options = {
-          model: requestedModel ?? activeModel,
-          permissionMode,
-          cwd: resolveQueryCwd(),
-          ...(activeSessionId ? { resume: activeSessionId } : {}),
-          canUseTool: async (
-            toolName: string,
-            input: Record<string, unknown>,
-            { signal, blockedPath, decisionReason, toolUseID, suggestions }: {
-              signal: AbortSignal
-              blockedPath?: string
-              decisionReason?: string
-              toolUseID: string
-              suggestions?: PermissionUpdate[]
+        if (provider === 'codex') {
+          if (!activeSessionId && !forceNewConversation) {
+            const resumeProject = activeProject ?? resolveQueryCwd()
+            const latestCodex = lastConversationSummaries
+              .filter((conversation) => conversation.provider === 'codex')
+              .filter((conversation) => conversation.project === resumeProject)
+              .sort((a, b) => b.updatedAt - a.updatedAt)[0]
+            if (latestCodex) {
+              activeSessionId = latestCodex.sessionId
+              activeProvider = 'codex'
             }
-          ): Promise<PermissionResult> => {
-            const requestId = crypto.randomUUID()
-
-            console.log('[canUseTool] toolName:', toolName)
-            console.log('[canUseTool] toolUseID:', toolUseID)
-            console.log('[canUseTool] suggestions:', JSON.stringify(suggestions, null, 2))
-
+          }
+          const imageAttachments = attachments.filter((att): att is ImageAttachment => att.type === 'image')
+          const cwd = resolveQueryCwd()
+          if (!(await isGitRepository(cwd))) {
             send({
-              type: 'permission_request',
-              requestId,
-              toolName,
-              toolInput: input,
-              blockedPath,
-              decisionReason,
-              toolUseID,
-              suggestions
+              type: 'warning',
+              message: 'Codex is running outside a git repo (skipGitRepoCheck enabled).'
             })
+          }
+          const { paths, cleanup } = await writeCodexImages(imageAttachments)
+          try {
+            const input: Array<{ type: 'text'; text: string } | { type: 'local_image'; path: string }> = []
+            if (textPrompt.trim()) {
+              input.push({ type: 'text', text: textPrompt })
+            }
+            for (const imagePath of paths) {
+              input.push({ type: 'local_image', path: imagePath })
+            }
+            const threadOptions = {
+              model: requestedModel ?? activeModel,
+              workingDirectory: cwd,
+              skipGitRepoCheck: true,
+              approvalPolicy: 'never' as const
+            }
+            const thread = activeSessionId
+              ? codex.resumeThread(activeSessionId, threadOptions)
+              : codex.startThread(threadOptions)
+            const { events } = await thread.runStreamed(input)
 
-            return new Promise<PermissionResult>((resolve) => {
-              pendingPermissions.set(requestId, {
+            for await (const event of events) {
+              if (event.type === 'thread.started') {
+                if (event.thread_id && event.thread_id !== activeSessionId) {
+                  activeSessionId = event.thread_id
+                  activeConversationUpdatedAt = null
+                  activeProvider = 'codex'
+                }
+                forceNewConversation = false
+                continue
+              }
+              if (event.type === 'turn.failed') {
+                send({ type: 'error', error: event.error.message ?? 'Codex turn failed.' })
+                break
+              }
+              if (event.type === 'error') {
+                send({ type: 'error', error: event.message ?? 'Codex stream failed.' })
+                break
+              }
+              if (event.type === 'item.completed') {
+                const messages = codexItemToMessages(event.item)
+                for (const message of messages) {
+                  send({ type: 'message', message })
+                  lastMessageCount += 1
+                }
+              }
+            }
+          } finally {
+            await cleanup()
+          }
+        } else {
+          // Build content blocks for Claude API
+          const contentBlocks: Array<
+            | { type: 'text'; text: string }
+            | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+          > = []
+
+          // Add image blocks first (Claude prefers images before text)
+          for (const att of attachments) {
+            if (att.type === 'image') {
+              contentBlocks.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: att.mediaType,
+                  data: att.data
+                }
+              })
+            }
+          }
+
+          // Add text prompt (with text attachments embedded)
+          if (textPrompt.trim()) {
+            contentBlocks.push({ type: 'text', text: textPrompt })
+          }
+
+          // If no content, skip
+          if (contentBlocks.length === 0) return
+
+          const permissionMode: PermissionMode = parsed.planMode ? 'plan' : 'default'
+          const options = {
+            model: requestedModel ?? activeModel,
+            permissionMode,
+            cwd: resolveQueryCwd(),
+            ...(activeSessionId ? { resume: activeSessionId } : {}),
+            canUseTool: async (
+              toolName: string,
+              input: Record<string, unknown>,
+              { signal, blockedPath, decisionReason, toolUseID, suggestions }: {
+                signal: AbortSignal
+                blockedPath?: string
+                decisionReason?: string
+                toolUseID: string
+                suggestions?: PermissionUpdate[]
+              }
+            ): Promise<PermissionResult> => {
+              const requestId = crypto.randomUUID()
+
+              console.log('[canUseTool] toolName:', toolName)
+              console.log('[canUseTool] toolUseID:', toolUseID)
+              console.log('[canUseTool] suggestions:', JSON.stringify(suggestions, null, 2))
+
+              send({
+                type: 'permission_request',
                 requestId,
-                resolve,
                 toolName,
-                toolUseID,
                 toolInput: input,
                 blockedPath,
                 decisionReason,
+                toolUseID,
                 suggestions
               })
 
-              signal.addEventListener('abort', () => {
-                pendingPermissions.delete(requestId)
-                // Note: SDK automatically adds toolUseID to the response
-                resolve({ behavior: 'deny', message: 'Request cancelled' })
+              return new Promise<PermissionResult>((resolve) => {
+                pendingPermissions.set(requestId, {
+                  requestId,
+                  resolve,
+                  toolName,
+                  toolUseID,
+                  toolInput: input,
+                  blockedPath,
+                  decisionReason,
+                  suggestions
+                })
+
+                signal.addEventListener('abort', () => {
+                  pendingPermissions.delete(requestId)
+                  // Note: SDK automatically adds toolUseID to the response
+                  resolve({ behavior: 'deny', message: 'Request cancelled' })
+                })
               })
-            })
-          }
-        }
-
-        // Use SDKUserMessage for multimodal content (images), string for text-only
-        const prompt = hasImages
-          ? (async function* () {
-              yield {
-                type: 'user',
-                message: { role: 'user', content: contentBlocks },
-                parent_tool_use_id: null,
-                session_id: activeSessionId ?? ''
-              } as SDKUserMessage
-            })()
-          : textPrompt
-
-        const queryResult = query({ prompt, options })
-        activeQuery = queryResult
-
-        for await (const msg of queryResult) {
-          if (msg.session_id && msg.session_id !== activeSessionId) {
-            activeSessionId = msg.session_id
-            activeConversationUpdatedAt = null
-          }
-
-          // Check if this is an AskUserQuestion tool_use
-          if (msg.type === 'assistant' && msg.message.content) {
-            for (const block of msg.message.content) {
-              if (block.type === 'tool_use' && block.name === 'ExitPlanMode') {
-                const requestId = crypto.randomUUID()
-
-                send({
-                  type: 'exit_plan_request',
-                  requestId,
-                  toolUseId: block.id,
-                  input: block.input ?? {}
-                })
-
-                const choice = await new Promise<'auto' | 'manual' | 'deny'>((resolve) => {
-                  pendingExitPlans.set(requestId, {
-                    requestId,
-                    resolve,
-                    toolUseId: block.id,
-                    input: (block.input ?? {}) as Record<string, unknown>
-                  })
-                })
-
-                await activeQuery?.streamInput((async function* () {
-                  yield {
-                    type: 'user',
-                    message: {
-                      role: 'user',
-                      content: [{
-                        type: 'tool_result',
-                        tool_use_id: block.id,
-                        content: buildExitPlanResult(choice)
-                      }]
-                    },
-                    parent_tool_use_id: null,
-                    session_id: activeSessionId ?? ''
-                  } as SDKUserMessage
-                })())
-              }
-
-              if (block.type === 'tool_use' && block.name === 'AskUserQuestion') {
-                const requestId = crypto.randomUUID()
-                const input = block.input as { questions: QuestionPrompt[] }
-
-                // Send question to frontend
-                send({
-                  type: 'user_question',
-                  requestId,
-                  toolUseId: block.id,
-                  questions: input.questions
-                })
-
-                // Wait for user response
-                const answers = await new Promise<Record<string, string>>((resolve) => {
-                  pendingQuestions.set(requestId, {
-                    requestId,
-                    resolve,
-                    toolUseId: block.id,
-                    questions: input.questions
-                  })
-                })
-
-                // Stream the tool_result back to SDK
-                await activeQuery?.streamInput((async function* () {
-                  yield {
-                    type: 'user',
-                    message: {
-                      role: 'user',
-                      content: [{
-                        type: 'tool_result',
-                        tool_use_id: block.id,
-                        content: JSON.stringify({ answers })
-                      }]
-                    },
-                    parent_tool_use_id: null,
-                    session_id: activeSessionId ?? ''
-                  } as SDKUserMessage
-                })())
-              }
             }
           }
 
-          const uiMessage = sdkMessageToUI(msg)
-          if (uiMessage) {
-            send({ type: 'message', message: uiMessage })
-            lastMessageCount += 1
+          // Use SDKUserMessage for multimodal content (images), string for text-only
+          const prompt = hasImages
+            ? (async function* () {
+                yield {
+                  type: 'user',
+                  message: { role: 'user', content: contentBlocks },
+                  parent_tool_use_id: null,
+                  session_id: activeSessionId ?? ''
+                } as SDKUserMessage
+              })()
+            : textPrompt
+
+          const queryResult = query({ prompt, options })
+          activeQuery = queryResult
+
+          for await (const msg of queryResult) {
+            if (msg.session_id && msg.session_id !== activeSessionId) {
+              activeSessionId = msg.session_id
+              activeConversationUpdatedAt = null
+              activeProvider = 'claude'
+            }
+
+            // Check if this is an AskUserQuestion tool_use
+            if (msg.type === 'assistant' && msg.message.content) {
+              for (const block of msg.message.content) {
+                if (block.type === 'tool_use' && block.name === 'ExitPlanMode') {
+                  const requestId = crypto.randomUUID()
+
+                  send({
+                    type: 'exit_plan_request',
+                    requestId,
+                    toolUseId: block.id,
+                    input: block.input ?? {}
+                  })
+
+                  const choice = await new Promise<'auto' | 'manual' | 'deny'>((resolve) => {
+                    pendingExitPlans.set(requestId, {
+                      requestId,
+                      resolve,
+                      toolUseId: block.id,
+                      input: (block.input ?? {}) as Record<string, unknown>
+                    })
+                  })
+
+                  await activeQuery?.streamInput((async function* () {
+                    yield {
+                      type: 'user',
+                      message: {
+                        role: 'user',
+                        content: [{
+                          type: 'tool_result',
+                          tool_use_id: block.id,
+                          content: buildExitPlanResult(choice)
+                        }]
+                      },
+                      parent_tool_use_id: null,
+                      session_id: activeSessionId ?? ''
+                    } as SDKUserMessage
+                  })())
+                }
+
+                if (block.type === 'tool_use' && block.name === 'AskUserQuestion') {
+                  const requestId = crypto.randomUUID()
+                  const input = block.input as { questions: QuestionPrompt[] }
+
+                  // Send question to frontend
+                  send({
+                    type: 'user_question',
+                    requestId,
+                    toolUseId: block.id,
+                    questions: input.questions
+                  })
+
+                  // Wait for user response
+                  const answers = await new Promise<Record<string, string>>((resolve) => {
+                    pendingQuestions.set(requestId, {
+                      requestId,
+                      resolve,
+                      toolUseId: block.id,
+                      questions: input.questions
+                    })
+                  })
+
+                  // Stream the tool_result back to SDK
+                  await activeQuery?.streamInput((async function* () {
+                    yield {
+                      type: 'user',
+                      message: {
+                        role: 'user',
+                        content: [{
+                          type: 'tool_result',
+                          tool_use_id: block.id,
+                          content: JSON.stringify({ answers })
+                        }]
+                      },
+                      parent_tool_use_id: null,
+                      session_id: activeSessionId ?? ''
+                    } as SDKUserMessage
+                  })())
+                }
+              }
+            }
+
+            const uiMessage = sdkMessageToUI(msg)
+            if (uiMessage) {
+              send({ type: 'message', message: uiMessage })
+              lastMessageCount += 1
+            }
           }
         }
         const conversations = await listConversations()
-        send({ type: 'conversations', conversations })
+        const formatted = conversations.map((conversation) => ({
+          ...conversation,
+          model: resolveModelLabel(conversation.model ?? null)
+        }))
+        send({ type: 'conversations', conversations: formatted })
       } catch (error) {
-        send({ type: 'error', error: 'Failed to send prompt to Claude.' })
+        const label = provider === 'codex' ? 'Codex' : 'Claude'
+        send({ type: 'error', error: `Failed to send prompt to ${label}.` })
       } finally {
         isStreaming = false
         activeQuery = null

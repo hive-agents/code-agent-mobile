@@ -27,6 +27,8 @@ type ConversationSummary = {
   project: string
   firstPrompt: string
   updatedAt: number
+  provider: 'claude' | 'codex'
+  model?: string | null
 }
 
 type ToolEntry = {
@@ -124,6 +126,7 @@ type ServerPayload =
       activeConversationId: string | null
       messages: ChatMessage[]
       model?: string | null
+      provider?: 'claude' | 'codex' | null
     }
   | {
       type: 'conversation'
@@ -131,6 +134,7 @@ type ServerPayload =
       messages: ChatMessage[]
       currentProject?: string | null
       model?: string | null
+      provider?: 'claude' | 'codex' | null
     }
   | {
       type: 'dir_list'
@@ -144,6 +148,7 @@ type ServerPayload =
   | { type: 'processing'; active: boolean }
   | { type: 'conversations'; conversations: ConversationSummary[] }
   | { type: 'error'; error: string }
+  | { type: 'warning'; message: string }
   | { type: 'permission_request'; requestId: string; toolName: string; toolInput: Record<string, unknown>; blockedPath?: string; decisionReason?: string; toolUseID: string; suggestions?: PermissionRequest['suggestions'] }
   | { type: 'user_question'; requestId: string; toolUseId: string; questions: UserQuestionRequest['questions'] }
   | { type: 'exit_plan_request'; requestId: string; toolUseId: string; input: Record<string, unknown> }
@@ -213,8 +218,68 @@ function truncateWords(text: string, maxWords = 10) {
 function resolveModelFromServer(model?: string | null) {
   if (!model) return null
   const normalized = model.trim().toLowerCase()
+  if (normalized.includes('gpt-5.2-codex') || normalized.includes('codex')) return 'gpt-5.2-codex'
   if (normalized === 'opus-4.5' || normalized.includes('opus')) return 'opus-4.5'
   if (normalized === 'sonnet-4.5' || normalized.includes('sonnet')) return 'sonnet-4.5'
+  return null
+}
+
+function providerForModel(model: 'opus-4.5' | 'sonnet-4.5' | 'gpt-5.2-codex' | null) {
+  if (!model) return null
+  if (model === 'gpt-5.2-codex') return 'codex'
+  return 'claude'
+}
+
+function renderModelIcon(model?: string | null) {
+  const resolved = resolveModelFromServer(model)
+  if (resolved === 'opus-4.5') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect
+          x="5"
+          y="7"
+          width="14"
+          height="12"
+          rx="3"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        />
+        <circle cx="9" cy="12" r="1.5" fill="currentColor" />
+        <circle cx="15" cy="12" r="1.5" fill="currentColor" />
+        <line x1="12" y1="3" x2="12" y2="7" stroke="currentColor" strokeWidth="2" />
+        <circle cx="12" cy="3" r="1" fill="currentColor" />
+      </svg>
+    )
+  }
+  if (resolved === 'gpt-5.2-codex') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M8 7L4 12l4 5M16 7l4 5-4 5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    )
+  }
+  if (resolved === 'sonnet-4.5') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M8.6 6.8C9 5.4 10.3 4.4 11.8 4.4c1.3 0 2.5.7 3.1 1.9 1.5.2 2.7 1.5 2.7 3 0 1-.5 1.9-1.3 2.4.3.5.4 1 .4 1.6 0 1.7-1.4 3.1-3.1 3.1-1 0-1.9-.4-2.5-1.1-.6.7-1.5 1.1-2.5 1.1-1.7 0-3.1-1.4-3.1-3.1 0-1 .5-1.9 1.2-2.4-.3-.4-.5-1-.5-1.6 0-1.4 1-2.7 2.4-2.9Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      </svg>
+    )
+  }
   return null
 }
 
@@ -253,7 +318,9 @@ export default function App() {
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false)
   const [conversationSearchQuery, setConversationSearchQuery] = useState('')
   const [modelMenuOpen, setModelMenuOpen] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<'opus-4.5' | 'sonnet-4.5'>('sonnet-4.5')
+  const [selectedModel, setSelectedModel] = useState<'opus-4.5' | 'sonnet-4.5' | 'gpt-5.2-codex'>('sonnet-4.5')
+  const [activeConversationProvider, setActiveConversationProvider] = useState<'claude' | 'codex' | null>(null)
+  const [warningMessage, setWarningMessage] = useState<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
   const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>({})
   const [expandedOther, setExpandedOther] = useState<Record<string, boolean>>({})
@@ -422,11 +489,17 @@ export default function App() {
           if (resolvedModel) {
             setSelectedModel(resolvedModel)
           }
+          if (payload.activeConversationId) {
+            setActiveConversationProvider(payload.provider ?? providerForModel(resolvedModel))
+          } else {
+            setActiveConversationProvider(null)
+          }
           const pendingProject = pendingNewConversationProjectRef.current
           if (pendingProject) {
             setActiveSessionId(null)
             setMessages([])
             setCurrentProject(pendingProject)
+            setActiveConversationProvider(null)
             wsRef.current?.send(JSON.stringify({ type: 'new_conversation', project: pendingProject }))
           }
         }
@@ -440,6 +513,11 @@ export default function App() {
           const resolvedModel = resolveModelFromServer(payload.model)
           if (resolvedModel) {
             setSelectedModel(resolvedModel)
+          }
+          if (payload.sessionId) {
+            setActiveConversationProvider(payload.provider ?? providerForModel(resolvedModel))
+          } else {
+            setActiveConversationProvider(null)
           }
         }
         if (payload.type === 'dir_list') {
@@ -459,6 +537,7 @@ export default function App() {
           setMessages([])
           setActiveSessionId(null)
           setCurrentProject(createdPath)
+          setActiveConversationProvider(null)
           setProjectPickerOpen(false)
           setSearchOpen(false)
           setSearchQuery('')
@@ -480,6 +559,9 @@ export default function App() {
         }
         if (payload.type === 'conversations') {
           setConversations(payload.conversations)
+        }
+        if (payload.type === 'warning') {
+          setWarningMessage(payload.message)
         }
         if (payload.type === 'error') {
           if (/server closed|disconnected|connection (lost|closed)|socket/i.test(payload.error)) {
@@ -587,6 +669,12 @@ export default function App() {
   useEffect(() => {
     composerFocusedRef.current = composerFocused
   }, [composerFocused])
+
+  useEffect(() => {
+    if (selectedModel === 'gpt-5.2-codex' && planMode) {
+      setPlanMode(false)
+    }
+  }, [planMode, selectedModel])
 
   const resizeComposerTextarea = useCallback((node: HTMLTextAreaElement, focused: boolean) => {
     const style = window.getComputedStyle(node)
@@ -833,8 +921,9 @@ export default function App() {
     const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
     const map = new Map<string, ConversationSummary>()
     for (const conversation of sorted) {
-      if (!map.has(conversation.sessionId)) {
-        map.set(conversation.sessionId, conversation)
+      const key = `${conversation.provider}:${conversation.sessionId}`
+      if (!map.has(key)) {
+        map.set(key, conversation)
       }
     }
     return Array.from(map.values())
@@ -848,6 +937,9 @@ export default function App() {
       return haystack.includes(query)
     })
   }, [conversationSearchQuery, uniqueConversations])
+
+  const claudeLocked = activeConversationProvider ? activeConversationProvider !== 'claude' : false
+  const codexLocked = activeConversationProvider ? activeConversationProvider !== 'codex' : false
 
   const filteredDirEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -1023,7 +1115,8 @@ export default function App() {
       JSON.stringify({
         type: 'select_conversation',
         sessionId: conversation.sessionId,
-        project: conversation.project
+        project: conversation.project,
+        provider: conversation.provider
       })
     )
     setDrawerOpen(false)
@@ -1073,6 +1166,7 @@ export default function App() {
     setMessages([])
     setActiveSessionId(null)
     setCurrentProject(dirPath)
+    setActiveConversationProvider(null)
     setProjectPickerOpen(false)
     setSearchOpen(false)
     setSearchQuery('')
@@ -1132,7 +1226,10 @@ export default function App() {
     setConversationSearchQuery('')
   }
 
-  const handleSelectModel = (model: 'opus-4.5' | 'sonnet-4.5') => {
+  const handleSelectModel = (model: 'opus-4.5' | 'sonnet-4.5' | 'gpt-5.2-codex') => {
+    if (activeConversationProvider && providerForModel(model) !== activeConversationProvider) {
+      return
+    }
     setSelectedModel(model)
     setModelMenuOpen(false)
   }
@@ -1512,6 +1609,18 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {warningMessage ? (
+        <div
+          className="warning-overlay"
+          onClick={() => setWarningMessage(null)}
+        >
+          <div className="warning-card">
+            <div className="warning-title">Heads up</div>
+            <div className="warning-text">{warningMessage}</div>
+            <div className="warning-hint">Tap anywhere to dismiss.</div>
+          </div>
+        </div>
+      ) : null}
       <div
         className={overlayOpen ? 'scrim open' : 'scrim'}
         onClick={() => {
@@ -1552,16 +1661,31 @@ export default function App() {
         <div className="conversation-list">
           {filteredConversations.map((conversation) => (
             <button
-              key={conversation.sessionId}
+              key={`${conversation.provider}:${conversation.sessionId}`}
               type="button"
               className={
-                activeSessionId === conversation.sessionId
+                activeSessionId === conversation.sessionId &&
+                activeConversationProvider === conversation.provider
                   ? 'conversation-item active'
                   : 'conversation-item'
               }
               onClick={() => handleSelectConversation(conversation)}
             >
-              <div className="conversation-dir">{formatProject(conversation.project)}</div>
+              <div className="conversation-meta">
+                <div className="conversation-dir">{formatProject(conversation.project)}</div>
+                {(() => {
+                  if (!conversation.model) return null
+                  const icon = renderModelIcon(conversation.model)
+                  if (!icon) return null
+                  const label = resolveModelFromServer(conversation.model) ?? conversation.model
+                  return (
+                    <div className="conversation-model" aria-label={`Model: ${label}`}>
+                      <span className="sr-only">{label}</span>
+                      {icon}
+                    </div>
+                  )
+                })()}
+              </div>
               <div className="conversation-preview">
                 {truncateWords(conversation.firstPrompt || conversation.project, 12)}
               </div>
@@ -1598,6 +1722,17 @@ export default function App() {
                   <line x1="12" y1="3" x2="12" y2="7" stroke="currentColor" strokeWidth="2" />
                   <circle cx="12" cy="3" r="1" fill="currentColor" />
                 </svg>
+              ) : selectedModel === 'gpt-5.2-codex' ? (
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M8 7L4 12l4 5M16 7l4 5-4 5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               ) : (
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path
@@ -1615,10 +1750,17 @@ export default function App() {
               <div className="model-menu" role="menu" aria-label="Select model">
                 <button
                   type="button"
-                  className={selectedModel === 'opus-4.5' ? 'model-option active' : 'model-option'}
+                  className={
+                    selectedModel === 'opus-4.5'
+                      ? 'model-option active'
+                      : claudeLocked
+                        ? 'model-option disabled'
+                        : 'model-option'
+                  }
                   onClick={() => handleSelectModel('opus-4.5')}
                   role="menuitemradio"
                   aria-checked={selectedModel === 'opus-4.5'}
+                  disabled={claudeLocked}
                 >
                   <span className="model-option-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24">
@@ -1642,10 +1784,17 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  className={selectedModel === 'sonnet-4.5' ? 'model-option active' : 'model-option'}
+                  className={
+                    selectedModel === 'sonnet-4.5'
+                      ? 'model-option active'
+                      : claudeLocked
+                        ? 'model-option disabled'
+                        : 'model-option'
+                  }
                   onClick={() => handleSelectModel('sonnet-4.5')}
                   role="menuitemradio"
                   aria-checked={selectedModel === 'sonnet-4.5'}
+                  disabled={claudeLocked}
                 >
                   <span className="model-option-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24">
@@ -1660,6 +1809,34 @@ export default function App() {
                     </svg>
                   </span>
                   <span className="model-option-label">sonnet-4.5</span>
+                </button>
+                <button
+                  type="button"
+                  className={
+                    selectedModel === 'gpt-5.2-codex'
+                      ? 'model-option active'
+                      : codexLocked
+                        ? 'model-option disabled'
+                        : 'model-option'
+                  }
+                  onClick={() => handleSelectModel('gpt-5.2-codex')}
+                  role="menuitemradio"
+                  aria-checked={selectedModel === 'gpt-5.2-codex'}
+                  disabled={codexLocked}
+                >
+                  <span className="model-option-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path
+                        d="M8 7L4 12l4 5M16 7l4 5-4 5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </span>
+                  <span className="model-option-label">gpt-5.2-codex</span>
                 </button>
               </div>
             ) : null}
@@ -1851,22 +2028,24 @@ export default function App() {
         )}
         {displayItems.map((item) => {
           if (item.kind === 'message') {
-            const roleClass = item.meta?.isMeta
+            const isMeta = item.role === 'meta' || item.meta?.isMeta
+            const roleClass = isMeta
               ? 'meta'
               : item.role === 'user'
                 ? 'user'
                 : item.role === 'tool'
                   ? 'tool'
                   : 'assistant'
-            const roleLabel =
-              item.role === 'user'
+            const roleLabel = isMeta
+              ? 'System'
+              : item.role === 'user'
                 ? 'User'
                 : item.role === 'assistant'
                   ? 'Agent'
                   : item.role === 'tool'
                     ? 'Tool'
                     : 'System'
-            const showRoleLabel = item.role === 'user' || item.role === 'assistant'
+            const showRoleLabel = !isMeta && (item.role === 'user' || item.role === 'assistant')
             const isNewMessage = !seenMessageIds.has(item.id)
             return (
               <div key={item.id} className={`chat-item${isNewMessage ? ' animate-in' : ''}`}>
@@ -2168,19 +2347,21 @@ export default function App() {
             }}
           />
           <div className="composer-actions" ref={composerActionsRef}>
-            <button
-              type="button"
-              className={planMode ? 'plan-toggle active' : 'plan-toggle'}
-              onClick={() => runComposerAction(() => setPlanMode((prev) => !prev))}
-              onMouseDown={handleComposerActionMouseDown}
-              onTouchStart={handleComposerActionTouchStart}
-              data-composer-action="keep"
-              aria-pressed={planMode}
-              aria-label="Toggle plan mode"
-            >
-              <span className="plan-dot" aria-hidden="true" />
-              <span>Plan</span>
-            </button>
+            {selectedModel !== 'gpt-5.2-codex' ? (
+              <button
+                type="button"
+                className={planMode ? 'plan-toggle active' : 'plan-toggle'}
+                onClick={() => runComposerAction(() => setPlanMode((prev) => !prev))}
+                onMouseDown={handleComposerActionMouseDown}
+                onTouchStart={handleComposerActionTouchStart}
+                data-composer-action="keep"
+                aria-pressed={planMode}
+                aria-label="Toggle plan mode"
+              >
+                <span className="plan-dot" aria-hidden="true" />
+                <span>Plan</span>
+              </button>
+            ) : null}
             <button
               type="button"
               className="file-button"
